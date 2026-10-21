@@ -6,7 +6,7 @@
 |---|---|
 | **Status** | Draft v0.1 — for discussion |
 | **Date** | 21 October 2026 |
-| **Author** | Christopher Tun, Paythonic AI Lab |
+| **Author** | Christopher Tun, TamarindTech |
 | **Audience** | Contributors, design partners, lenders evaluating Tamarind |
 
 ---
