@@ -1,0 +1,124 @@
+catalogue: decision
+description: Policy evaluation, recommendations and credit decisions. Approve and decline are always human-gated by default.
+tools:
+  - name: policy.evaluate
+    version: 0.1.0
+    summary: Evaluate the product's policy pack rules against the current application and return matched rules and reason codes.
+    risk_tier: read
+    default_autonomy: L4
+    mutates: false
+    idempotent: true
+    scopes: [policy:evaluate]
+    errors: [NOT_FOUND]
+    input:
+      type: object
+      required: [application_id]
+      properties:
+        application_id: { type: string, format: uuid }
+        rule_sets: { type: array, items: { type: string, enum: [eligibility, credit, documents] } }
+    output:
+      type: object
+      properties:
+        pack: { type: string }
+        pack_version: { type: string }
+        outcome: { type: string, enum: [pass, refer, decline] }
+        results: { type: array, items: { type: object, properties: { rule_id: { type: string }, passed: { type: boolean }, reason_code: { type: string } } } }
+
+  - name: decision.recommend
+    version: 0.1.0
+    summary: Produce a recommendation with terms, conditions, reason codes and a credit memo, stored as an immutable decision record.
+    risk_tier: medium
+    default_autonomy: L2
+    max_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [decisions:recommend]
+    preconditions:
+      - application.state == 'underwriting'
+      - checks.all_mandatory_complete
+    emits: [DecisionRecommended, ApprovalRequested]
+    errors: [STATE_CONFLICT, PRECONDITION_FAILED]
+    input:
+      type: object
+      required: [application_id, outcome, reason_codes, narrative]
+      properties:
+        application_id: { type: string, format: uuid }
+        outcome: { type: string, enum: [approve, approve_with_conditions, decline, refer] }
+        terms:
+          type: object
+          properties:
+            amount_minor: { type: integer }
+            term_months: { type: integer }
+            rate_apr_bps: { type: integer }
+        conditions: { type: array, items: { type: string } }
+        reason_codes: { type: array, items: { type: string }, minItems: 1 }
+        narrative: { type: string, maxLength: 8000 }
+        confidence: { type: number, minimum: 0, maximum: 1 }
+    output: { type: object, properties: { decision_record_id: { type: string, format: uuid }, approval_request_id: { type: string, format: uuid } } }
+
+  - name: decision.approve
+    version: 0.1.0
+    summary: Approve the application on the recommended or amended terms.
+    risk_tier: high
+    default_autonomy: gate
+    max_autonomy: L4
+    mutates: true
+    idempotent: true
+    scopes: [decisions:approve]
+    preconditions:
+      - application.has_recommendation
+    transition: { from: [underwriting], to: decisioned }
+    emits: [ApplicationApproved]
+    errors: [STATE_CONFLICT, PRECONDITION_FAILED, POLICY_DENIED, APPROVAL_LIMIT_EXCEEDED, MAKER_CHECKER_VIOLATION]
+    input:
+      type: object
+      required: [application_id, recommendation_id]
+      properties:
+        application_id: { type: string, format: uuid }
+        recommendation_id: { type: string, format: uuid }
+        amended_terms: { type: object }
+        note: { type: string, maxLength: 2000 }
+    output: { type: object, properties: { decision_record_id: { type: string, format: uuid }, state: { type: string } } }
+
+  - name: decision.decline
+    version: 0.1.0
+    summary: Decline the application. Reason codes drive the adverse-action notice.
+    risk_tier: high
+    default_autonomy: gate
+    max_autonomy: L4
+    mutates: true
+    idempotent: true
+    scopes: [decisions:approve]
+    transition: { from: [underwriting, verification, referred], to: closed }
+    emits: [ApplicationDeclined, AdverseActionNoticeRequired]
+    errors: [STATE_CONFLICT, POLICY_DENIED, MAKER_CHECKER_VIOLATION]
+    input:
+      type: object
+      required: [application_id, reason_codes]
+      properties:
+        application_id: { type: string, format: uuid }
+        recommendation_id: { type: string, format: uuid }
+        reason_codes: { type: array, items: { type: string }, minItems: 1 }
+        note: { type: string, maxLength: 2000 }
+    output: { type: object, properties: { decision_record_id: { type: string, format: uuid }, state: { type: string } } }
+
+  - name: decision.refer
+    version: 0.1.0
+    summary: Escalate a decision to a higher approval authority, such as a credit committee.
+    risk_tier: medium
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [decisions:recommend]
+    preconditions:
+      - application.state == 'underwriting'
+    emits: [DecisionReferred, ApprovalRequested]
+    errors: [STATE_CONFLICT, PRECONDITION_FAILED]
+    input:
+      type: object
+      required: [application_id, to_role, reason]
+      properties:
+        application_id: { type: string, format: uuid }
+        to_role: { type: string }
+        reason: { type: string, maxLength: 2000 }
+    output: { type: object, properties: { approval_request_id: { type: string, format: uuid } } }

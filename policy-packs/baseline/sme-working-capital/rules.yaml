@@ -1,0 +1,98 @@
+# Business rules for the SME working-capital baseline pack, written in CEL (ADR-0004).
+#
+# Each rule states the condition that must be TRUE for the application to pass.
+# If it is false, the rule's outcome applies:
+#   decline -> hard knock-out; reason code feeds the adverse-action notice
+#   refer   -> needs human judgement; the case goes to an approver with the reason
+#
+# Variables available to every expression:
+#   application  requested terms, business profile, directors
+#   product      the product definition from pack.yaml
+#   checks       normalised check results
+#   metrics      derived cash-flow and financial metrics
+#
+# Thresholds are illustrative baseline values, not credit advice. Country packs override them.
+version: 0.1.0
+
+rule_sets:
+  eligibility:
+    - id: ELG-01
+      description: Requested amount is within the product range.
+      expression: >
+        application.requested_amount_minor >= product.amount_minor.min &&
+        application.requested_amount_minor <= product.amount_minor.max
+      outcome: decline
+      reason_code: AMOUNT_OUT_OF_RANGE
+
+    - id: ELG-02
+      description: Requested term is within the product range.
+      expression: >
+        application.requested_term_months >= product.term_months.min &&
+        application.requested_term_months <= product.term_months.max
+      outcome: decline
+      reason_code: TERM_OUT_OF_RANGE
+
+    - id: ELG-03
+      description: Business has traded for at least 12 months.
+      expression: application.business.months_trading >= 12
+      outcome: decline
+      reason_code: INSUFFICIENT_TRADING_HISTORY
+
+    - id: ELG-04
+      description: All directors are adults.
+      expression: application.directors.all(d, d.age_years >= 18)
+      outcome: decline
+      reason_code: DIRECTOR_NOT_ELIGIBLE
+
+  compliance:
+    - id: CMP-01
+      description: No confirmed sanctions match on any party.
+      expression: "!checks.sanctions.confirmed_match"
+      outcome: decline
+      reason_code: SANCTIONS_MATCH
+
+    - id: CMP-02
+      description: Identity verified for every required individual.
+      expression: checks.kyc.all_passed
+      outcome: refer
+      reason_code: IDENTITY_NOT_VERIFIED
+
+    - id: CMP-03
+      description: Business registration verified.
+      expression: checks.kyb.status == 'passed'
+      outcome: refer
+      reason_code: BUSINESS_NOT_VERIFIED
+
+  credit:
+    - id: CRD-01
+      description: No serious default on the business or directors in the last 24 months.
+      expression: "!checks.bureau.serious_default_24m"
+      outcome: decline
+      reason_code: RECENT_SERIOUS_DEFAULT
+
+    - id: CRD-02
+      description: Debt service coverage ratio of at least 1.25, including the new loan.
+      expression: metrics.dscr >= 1.25
+      outcome: refer
+      reason_code: LOW_DEBT_SERVICE_COVERAGE
+
+    - id: CRD-03
+      description: Loan amount is at most 30% of annual revenue.
+      expression: double(application.requested_amount_minor) <= 0.30 * double(metrics.annual_revenue_minor)
+      outcome: refer
+      reason_code: AMOUNT_HIGH_VS_REVENUE
+
+    - id: CRD-04
+      description: At least 6 months of bank history analysed.
+      expression: metrics.bank_months >= 6
+      outcome: refer
+      reason_code: INSUFFICIENT_BANK_HISTORY
+
+    - id: CRD-05
+      description: Account was overdrawn on 10 or fewer days in the last 6 months.
+      expression: metrics.negative_balance_days_6m <= 10
+      outcome: refer
+      reason_code: FREQUENT_OVERDRAFT
+
+# Aggregation: any failed "decline" rule -> decline.
+# Otherwise any failed "refer" rule -> refer. Otherwise -> pass.

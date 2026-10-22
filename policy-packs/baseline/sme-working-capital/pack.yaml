@@ -1,0 +1,76 @@
+# Baseline policy pack: SME working-capital loan (unsecured)
+# Jurisdiction-neutral reference pack (ADR-0002). Values are illustrative defaults,
+# not credit or regulatory advice. Country packs override them.
+pack: baseline/sme-working-capital
+version: 0.1.0
+status: draft
+jurisdiction: baseline
+
+product:
+  code: SME-WC
+  name: SME Working-Capital Loan (unsecured)
+  currency: USD                 # example currency; set per country pack
+  amount_minor: { min: 500000, max: 10000000 }   # 5,000.00 to 100,000.00
+  term_months: { min: 3, max: 24 }
+  repayment: monthly_amortising
+  pricing:
+    method: risk_grade_table
+    apr_bps_by_grade: { A: 1400, B: 1900, C: 2600 }
+  offer_validity_days: 14
+
+parties:
+  required:
+    - { role: applicant, kind: business, min: 1, max: 1 }
+    - { role: director, kind: individual, min: 1 }
+  beneficial_owner_threshold_pct: 25   # owners at or above this share must be added and verified
+  guarantor: { required_when: "application.requested_amount_minor > 5000000" }
+
+documents:
+  - { type: business_registration, party: applicant, required: true }
+  - { type: identity_document, party: [director, beneficial_owner, guarantor], required: true }
+  - { type: bank_statements, party: applicant, required: true, min_months: 6 }
+  - { type: financial_statements, party: applicant, min_years: 2, required_when: "application.requested_amount_minor > 2500000" }
+  - { type: management_accounts, party: applicant, required: false }
+  - { type: proof_of_address, party: applicant, required: true }
+  - { type: tax_return, party: applicant, required: false }
+
+checks:
+  - { type: kyb, party: applicant, mandatory: true }
+  - { type: kyc, party: [director, beneficial_owner, guarantor], mandatory: true, consent: kyc }
+  - { type: sanctions, party: all, mandatory: true }
+  - { type: credit_bureau, report: commercial, party: applicant, mandatory: true, consent: credit_bureau }
+  - { type: credit_bureau, report: consumer, party: [director, guarantor], mandatory: false, consent: credit_bureau }
+  - { type: bank_analysis, party: applicant, mandatory: true, consent: bank_data }
+
+rules: rules.yaml
+state_machine: state-machine.yaml
+authorization: authz.cedar
+
+# Autonomy per tool for this product. The gateway uses the lowest of:
+# tool max_autonomy, tenant setting, this pack, and the actor's trust level.
+autonomy:
+  application.create: L3
+  application.submit: L3
+  document.request: L3
+  document.classify: L3
+  document.extract: L3
+  evidence.verify: L3
+  kyc.run: L3
+  sanctions.screen: L3
+  credit.pull_report: L3
+  bank.analyse_statements: L3
+  decision.recommend: L2
+  decision.refer: L3
+  decision.approve: gate
+  decision.decline: gate
+  offer.generate: L3
+  offer.send: L2
+  loan.handoff: gate
+
+# Approval authority, in minor units. Loaded as principal attributes for Cedar.
+approval_authority:
+  - { role: credit_approver, limit_minor: 2500000 }
+  - { role: senior_credit_approver, limit_minor: 10000000 }
+
+evidence:
+  min_confidence_auto_verify: 0.90   # below this, evidence.verify routes to human review

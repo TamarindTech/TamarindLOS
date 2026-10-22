@@ -1,0 +1,59 @@
+# Test cases for rules.yaml. CI evaluates every case and compares the outcome and failed rules.
+version: 0.1.0
+
+defaults: &strong
+  product:
+    amount_minor: { min: 500000, max: 10000000 }
+    term_months: { min: 3, max: 24 }
+  application:
+    requested_amount_minor: 3000000
+    requested_term_months: 12
+    business: { months_trading: 48 }
+    directors:
+      - { age_years: 45 }
+      - { age_years: 38 }
+  checks:
+    sanctions: { confirmed_match: false }
+    kyc: { all_passed: true }
+    kyb: { status: passed }
+    bureau: { serious_default_24m: false }
+  metrics:
+    dscr: 1.8
+    annual_revenue_minor: 24000000
+    bank_months: 12
+    negative_balance_days_6m: 2
+
+cases:
+  - name: strong applicant passes
+    input: *strong
+    expect: { outcome: pass, failed: [] }
+
+  - name: sanctions match is declined
+    input:
+      <<: *strong
+      checks:
+        sanctions: { confirmed_match: true }
+        kyc: { all_passed: true }
+        kyb: { status: passed }
+        bureau: { serious_default_24m: false }
+    expect: { outcome: decline, failed: [CMP-01] }
+
+  - name: young business is declined
+    input:
+      <<: *strong
+      application:
+        requested_amount_minor: 3000000
+        requested_term_months: 12
+        business: { months_trading: 7 }
+        directors: [ { age_years: 30 } ]
+    expect: { outcome: decline, failed: [ELG-03] }
+
+  - name: thin cash flow is referred
+    input:
+      <<: *strong
+      metrics:
+        dscr: 1.1
+        annual_revenue_minor: 8000000
+        bank_months: 12
+        negative_balance_days_6m: 14
+    expect: { outcome: refer, failed: [CRD-02, CRD-03, CRD-05] }

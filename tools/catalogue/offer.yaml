@@ -1,0 +1,92 @@
+catalogue: offer
+description: Offers to approved applicants, acceptance and hand-off to core banking.
+tools:
+  - name: offer.generate
+    version: 0.1.0
+    summary: Generate an offer with repayment schedule summary and disclosures from the approved decision.
+    risk_tier: high
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [offers:write]
+    preconditions:
+      - application.state == 'decisioned'
+      - application.decision_outcome in ['approve', 'approve_with_conditions']
+    emits: [OfferGenerated]
+    errors: [STATE_CONFLICT, PRECONDITION_FAILED]
+    input:
+      type: object
+      required: [application_id, decision_record_id]
+      properties:
+        application_id: { type: string, format: uuid }
+        decision_record_id: { type: string, format: uuid }
+        validity_days: { type: integer, minimum: 1, maximum: 90 }
+    output: { type: object, properties: { offer_id: { type: string, format: uuid }, expires_at: { type: string, format: date-time } } }
+
+  - name: offer.send
+    version: 0.1.0
+    summary: Send a generated offer to the applicant.
+    risk_tier: high
+    default_autonomy: L2
+    mutates: true
+    idempotent: true
+    scopes: [offers:write]
+    transition: { from: [decisioned], to: offered }
+    emits: [OfferSent]
+    errors: [STATE_CONFLICT, PRECONDITION_FAILED]
+    input:
+      type: object
+      required: [offer_id]
+      properties:
+        offer_id: { type: string, format: uuid }
+        channel: { type: string, enum: [email, sms, portal] }
+    output: { type: object, properties: { state: { type: string } } }
+
+  - name: offer.accept
+    version: 0.1.0
+    summary: Record the applicant's acceptance of an offer, with e-signature evidence.
+    risk_tier: high
+    default_autonomy: L0
+    max_autonomy: L0
+    mutates: true
+    idempotent: true
+    scopes: [offers:accept]
+    preconditions:
+      - offer.status == 'sent'
+      - offer.expires_at > now
+    transition: { from: [offered], to: accepted }
+    emits: [OfferAccepted]
+    errors: [STATE_CONFLICT, OFFER_EXPIRED, SIGNATURE_INVALID]
+    input:
+      type: object
+      required: [offer_id, signature]
+      properties:
+        offer_id: { type: string, format: uuid }
+        signature: { type: object, description: "E-signature envelope id or click-to-accept evidence." }
+    output: { type: object, properties: { state: { type: string } } }
+
+  - name: loan.handoff
+    version: 0.1.0
+    summary: Send the booking package to the core banking or servicing system.
+    risk_tier: high
+    default_autonomy: gate
+    mutates: true
+    idempotent: true
+    scopes: [loans:handoff]
+    preconditions:
+      - application.conditions_precedent_met
+    transition: { from: [accepted], to: handed_off }
+    emits: [LoanHandedOff]
+    errors: [STATE_CONFLICT, PRECONDITION_FAILED, TARGET_UNAVAILABLE]
+    input:
+      type: object
+      required: [application_id, target]
+      properties:
+        application_id: { type: string, format: uuid }
+        target: { type: string, description: "Configured hand-off adapter, e.g. fineract." }
+    output:
+      type: object
+      properties:
+        external_client_id: { type: string }
+        external_loan_id: { type: string }
+        state: { type: string }

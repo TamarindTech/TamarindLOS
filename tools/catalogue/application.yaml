@@ -1,0 +1,136 @@
+catalogue: application
+description: Create, read and move loan applications through their lifecycle.
+tools:
+  - name: application.create
+    version: 0.1.0
+    summary: Create a draft application for a product.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [applications:write]
+    emits: [ApplicationCreated]
+    errors: [PRODUCT_NOT_FOUND, PRODUCT_INACTIVE, VALIDATION_FAILED]
+    input:
+      type: object
+      required: [product_code, requested_amount_minor, currency, requested_term_months]
+      properties:
+        product_code: { type: string }
+        requested_amount_minor: { type: integer, minimum: 1 }
+        currency: { type: string, pattern: "^[A-Z]{3}$" }
+        requested_term_months: { type: integer, minimum: 1 }
+        purpose: { type: string, maxLength: 500 }
+        channel: { type: string, enum: [branch, web, partner, agent] }
+    output:
+      type: object
+      properties:
+        application_id: { type: string, format: uuid }
+        reference: { type: string }
+        state: { type: string }
+
+  - name: application.update
+    version: 0.1.0
+    summary: Update requested terms or details of an application that has not been decisioned.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [applications:write]
+    preconditions:
+      - application.state in ['draft', 'intake', 'referred']
+    emits: [ApplicationUpdated]
+    errors: [STATE_CONFLICT, PRECONDITION_FAILED, VALIDATION_FAILED]
+    input:
+      type: object
+      required: [application_id, changes]
+      properties:
+        application_id: { type: string, format: uuid }
+        changes:
+          type: object
+          properties:
+            requested_amount_minor: { type: integer, minimum: 1 }
+            requested_term_months: { type: integer, minimum: 1 }
+            purpose: { type: string, maxLength: 500 }
+    output: { type: object, properties: { state_version: { type: integer } } }
+
+  - name: application.submit
+    version: 0.1.0
+    summary: Submit a draft application for processing.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [applications:write]
+    preconditions:
+      - application.parties.exists(p, p.role == 'applicant')
+      - application.requested_amount_minor > 0
+    transition: { from: [draft], to: submitted }
+    emits: [ApplicationSubmitted]
+    errors: [STATE_CONFLICT, PRECONDITION_FAILED]
+    input:
+      type: object
+      required: [application_id]
+      properties: { application_id: { type: string, format: uuid } }
+    output: { type: object, properties: { state: { type: string } } }
+
+  - name: application.withdraw
+    version: 0.1.0
+    summary: Withdraw an application at the borrower's request.
+    risk_tier: medium
+    default_autonomy: L2
+    mutates: true
+    idempotent: true
+    scopes: [applications:write]
+    transition: { from: [draft, submitted, intake, verification, referred, underwriting], to: withdrawn }
+    emits: [ApplicationWithdrawn]
+    errors: [STATE_CONFLICT]
+    input:
+      type: object
+      required: [application_id, reason]
+      properties:
+        application_id: { type: string, format: uuid }
+        reason: { type: string, maxLength: 500 }
+    output: { type: object, properties: { state: { type: string } } }
+
+  - name: application.get
+    version: 0.1.0
+    summary: Return the application snapshot used by humans and agents.
+    risk_tier: read
+    default_autonomy: L4
+    mutates: false
+    idempotent: true
+    scopes: [applications:read]
+    errors: [NOT_FOUND]
+    input:
+      type: object
+      required: [application_id]
+      properties:
+        application_id: { type: string, format: uuid }
+        include: { type: array, items: { type: string, enum: [parties, documents, evidence, checks, decisions, offers, tasks] } }
+    output:
+      type: object
+      properties:
+        application: { type: object }
+        state_version: { type: integer }
+
+  - name: application.next_actions
+    version: 0.1.0
+    summary: List the tools the caller may invoke next, with unmet preconditions and missing items.
+    risk_tier: read
+    default_autonomy: L4
+    mutates: false
+    idempotent: true
+    scopes: [applications:read]
+    errors: [NOT_FOUND]
+    input:
+      type: object
+      required: [application_id]
+      properties: { application_id: { type: string, format: uuid } }
+    output:
+      type: object
+      properties:
+        state: { type: string }
+        completeness_pct: { type: number }
+        allowed: { type: array, items: { type: object, properties: { tool: { type: string }, autonomy: { type: string } } } }
+        blocked: { type: array, items: { type: object, properties: { tool: { type: string }, unmet: { type: array, items: { type: string } } } } }
+        missing_documents: { type: array, items: { type: string } }

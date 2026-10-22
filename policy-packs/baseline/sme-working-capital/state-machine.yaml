@@ -1,0 +1,50 @@
+# Application state machine for the SME working-capital product.
+# Guards are CEL expressions over the application snapshot (see docs/specs/05-sme-working-capital.md).
+version: 1.0.0
+
+states:
+  - { name: draft }
+  - { name: submitted }
+  - { name: intake }
+  - { name: verification }
+  - { name: referred }
+  - { name: underwriting }
+  - { name: decisioned }
+  - { name: offered }
+  - { name: accepted }
+  - { name: handed_off, terminal: true }
+  - { name: closed, terminal: true }
+  - { name: expired, terminal: true }
+  - { name: withdrawn, terminal: true }
+
+transitions:
+  - { from: draft, to: submitted, by: tool, tool: application.submit }
+  - { from: submitted, to: intake, by: system, guard: "true" }
+  - from: intake
+    to: verification
+    by: system
+    guard: "application.completeness_pct == 100.0"
+  - from: verification
+    to: underwriting
+    by: system
+    guard: "checks.all_mandatory_complete && !checks.any_needs_review"
+  - from: verification
+    to: referred
+    by: system
+    guard: "checks.any_needs_review"
+  - from: referred
+    to: verification
+    by: system
+    guard: "!checks.any_needs_review"
+  - { from: underwriting, to: decisioned, by: tool, tool: decision.approve }
+  - { from: [underwriting, verification, referred], to: closed, by: tool, tool: decision.decline }
+  - { from: decisioned, to: offered, by: tool, tool: offer.send }
+  - { from: offered, to: accepted, by: tool, tool: offer.accept }
+  - from: offered
+    to: expired
+    by: system
+    guard: "offer.expires_at < now"
+  - { from: accepted, to: handed_off, by: tool, tool: loan.handoff }
+  - { from: [draft, submitted, intake, verification, referred, underwriting], to: withdrawn, by: tool, tool: application.withdraw }
+
+# Events emitted on every transition: ApplicationStateChanged {from, to, by, tool}

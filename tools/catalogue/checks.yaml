@@ -1,0 +1,98 @@
+catalogue: checks
+description: External and internal verifications. Each call goes through a connector port; mock adapters exist for every check.
+tools:
+  - name: kyc.run
+    version: 0.1.0
+    summary: Verify the identity of an individual (KYC) or a business (KYB).
+    risk_tier: medium
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [checks:run]
+    consent: [kyc]
+    preconditions:
+      - application.state in ['verification', 'referred']
+    emits: [CheckCompleted]
+    errors: [CONSENT_MISSING, PRECONDITION_FAILED, PROVIDER_UNAVAILABLE]
+    input:
+      type: object
+      required: [application_id, party_id]
+      properties:
+        application_id: { type: string, format: uuid }
+        party_id: { type: string, format: uuid }
+        level: { type: string, enum: [standard, enhanced], default: standard }
+    output: { type: object, properties: { check_id: { type: string, format: uuid }, status: { type: string } } }
+
+  - name: sanctions.screen
+    version: 0.1.0
+    summary: Screen a party against sanctions and politically exposed persons lists.
+    risk_tier: medium
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [checks:run]
+    preconditions:
+      - application.state in ['verification', 'referred']
+    emits: [CheckCompleted]
+    errors: [PRECONDITION_FAILED, PROVIDER_UNAVAILABLE]
+    input:
+      type: object
+      required: [application_id, party_id]
+      properties:
+        application_id: { type: string, format: uuid }
+        party_id: { type: string, format: uuid }
+    output:
+      type: object
+      properties:
+        check_id: { type: string, format: uuid }
+        status: { type: string }
+        potential_matches: { type: integer }
+
+  - name: credit.pull_report
+    version: 0.1.0
+    summary: Retrieve a consumer or commercial credit bureau report.
+    risk_tier: medium
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [checks:run]
+    consent: [credit_bureau]
+    preconditions:
+      - application.state in ['verification', 'referred', 'underwriting']
+    emits: [CheckCompleted]
+    errors: [CONSENT_MISSING, PRECONDITION_FAILED, PROVIDER_UNAVAILABLE]
+    input:
+      type: object
+      required: [application_id, party_id, report_type]
+      properties:
+        application_id: { type: string, format: uuid }
+        party_id: { type: string, format: uuid }
+        report_type: { type: string, enum: [consumer, commercial] }
+    output: { type: object, properties: { check_id: { type: string, format: uuid }, status: { type: string } } }
+
+  - name: bank.analyse_statements
+    version: 0.1.0
+    summary: Analyse bank transactions (from open banking or uploaded statements) into cash-flow metrics.
+    risk_tier: medium
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [checks:run]
+    consent: [bank_data]
+    preconditions:
+      - application.state in ['verification', 'referred', 'underwriting']
+    emits: [CheckCompleted]
+    errors: [CONSENT_MISSING, PRECONDITION_FAILED, INSUFFICIENT_DATA]
+    input:
+      type: object
+      required: [application_id, party_id, source]
+      properties:
+        application_id: { type: string, format: uuid }
+        party_id: { type: string, format: uuid }
+        source: { type: string, enum: [open_banking, uploaded_statements] }
+    output:
+      type: object
+      properties:
+        check_id: { type: string, format: uuid }
+        months_covered: { type: integer }
+        metrics: { type: object }

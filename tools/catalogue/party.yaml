@@ -1,0 +1,72 @@
+catalogue: party
+description: Parties on an application and their consents.
+tools:
+  - name: party.add
+    version: 0.1.0
+    summary: Add an individual or business to an application in a given role.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [parties:write]
+    preconditions:
+      - application.state in ['draft', 'intake', 'referred']
+    emits: [PartyAdded]
+    errors: [STATE_CONFLICT, PRECONDITION_FAILED, VALIDATION_FAILED]
+    input:
+      type: object
+      required: [application_id, kind, role, legal_name]
+      properties:
+        application_id: { type: string, format: uuid }
+        kind: { type: string, enum: [individual, business] }
+        role: { type: string, enum: [applicant, co_applicant, guarantor, director, beneficial_owner] }
+        legal_name: { type: string }
+        date_of_birth: { type: string, format: date }
+        registration_number: { type: string }
+        country: { type: string, pattern: "^[A-Z]{2}$" }
+        ownership_pct: { type: number, minimum: 0, maximum: 100 }
+        contact: { type: object, properties: { email: { type: string }, phone: { type: string } } }
+    output: { type: object, properties: { party_id: { type: string, format: uuid } } }
+
+  - name: party.update
+    version: 0.1.0
+    summary: Correct or complete a party's details.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [parties:write]
+    preconditions:
+      - application.state in ['draft', 'intake', 'verification', 'referred']
+    emits: [PartyUpdated]
+    errors: [NOT_FOUND, PRECONDITION_FAILED, VALIDATION_FAILED]
+    input:
+      type: object
+      required: [party_id, changes]
+      properties:
+        party_id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        changes: { type: object }
+    output: { type: object, properties: { party_id: { type: string, format: uuid } } }
+
+  - name: consent.record
+    version: 0.1.0
+    summary: Record a party's consent for a data check or communication channel.
+    description: Consent must come from the party itself (borrower portal, signed form or recorded call). Agents may record consent only when given verifiable evidence.
+    risk_tier: medium
+    default_autonomy: L2
+    mutates: true
+    idempotent: true
+    scopes: [consents:write]
+    emits: [ConsentRecorded]
+    errors: [NOT_FOUND, VALIDATION_FAILED]
+    input:
+      type: object
+      required: [party_id, scope, evidence]
+      properties:
+        party_id: { type: string, format: uuid }
+        application_id: { type: string, format: uuid }
+        scope: { type: string, enum: [credit_bureau, bank_data, kyc, e_communication, data_sharing] }
+        expires_at: { type: string, format: date-time }
+        evidence: { type: object, description: "How consent was captured, e.g. portal click with timestamp and IP, or signed form document id." }
+    output: { type: object, properties: { consent_id: { type: string, format: uuid } } }

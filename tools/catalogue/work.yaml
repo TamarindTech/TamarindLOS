@@ -1,0 +1,67 @@
+catalogue: work
+description: Tasks and approval requests shared by humans and agents.
+tools:
+  - name: task.create
+    version: 0.1.0
+    summary: Create a task for a person, role or agent, typically an exception or review.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [tasks:write]
+    emits: [TaskCreated]
+    errors: [VALIDATION_FAILED]
+    input:
+      type: object
+      required: [kind, title, assignee]
+      properties:
+        application_id: { type: string, format: uuid }
+        kind: { type: string, enum: [review_evidence, resolve_exception, collect_document, contact_party, other] }
+        title: { type: string, maxLength: 200 }
+        details: { type: object }
+        assignee: { type: string, description: "Principal id (user:..., agent:...) or role (role:...)." }
+        due_at: { type: string, format: date-time }
+    output: { type: object, properties: { task_id: { type: string, format: uuid } } }
+
+  - name: task.complete
+    version: 0.1.0
+    summary: Complete or cancel a task with an outcome.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [tasks:write]
+    emits: [TaskCompleted]
+    errors: [NOT_FOUND, STATE_CONFLICT]
+    input:
+      type: object
+      required: [task_id, status]
+      properties:
+        task_id: { type: string, format: uuid }
+        status: { type: string, enum: [done, cancelled] }
+        outcome: { type: object }
+    output: { type: object, properties: { status: { type: string } } }
+
+  - name: approval.respond
+    version: 0.1.0
+    summary: Approve or reject a pending gated action. Approving executes the original tool call.
+    risk_tier: high
+    default_autonomy: L0
+    max_autonomy: L0
+    mutates: true
+    idempotent: true
+    scopes: [approvals:respond]
+    emits: [ApprovalGranted, ApprovalRejected]
+    errors: [NOT_FOUND, STATE_CONFLICT, MAKER_CHECKER_VIOLATION, POLICY_DENIED]
+    input:
+      type: object
+      required: [approval_request_id, decision]
+      properties:
+        approval_request_id: { type: string, format: uuid }
+        decision: { type: string, enum: [approve, reject] }
+        note: { type: string, maxLength: 2000 }
+    output:
+      type: object
+      properties:
+        status: { type: string }
+        result: { type: object, description: "Result of the executed tool when approved." }

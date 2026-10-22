@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TamarindTech/TamarindLOS/tools/schema/tool-definition.schema.json",
+  "title": "Tamarind tool catalogue file",
+  "description": "A catalogue file groups the tool definitions of one domain. Each tool is the single source of truth for its REST endpoint, MCP tool and generated client types.",
+  "type": "object",
+  "required": ["catalogue", "tools"],
+  "additionalProperties": false,
+  "properties": {
+    "catalogue": { "type": "string", "pattern": "^[a-z][a-z_]*$" },
+    "description": { "type": "string" },
+    "tools": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/tool" } }
+  },
+  "$defs": {
+    "autonomy": { "type": "string", "enum": ["L0", "L1", "L2", "L3", "L4", "gate"] },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version", "summary", "risk_tier", "default_autonomy", "mutates", "idempotent", "scopes", "input", "output"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z]+(\\.[a-z_]+)+$" },
+        "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+        "summary": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string" },
+        "risk_tier": { "type": "string", "enum": ["read", "low", "medium", "high"] },
+        "default_autonomy": { "$ref": "#/$defs/autonomy" },
+        "max_autonomy": { "$ref": "#/$defs/autonomy" },
+        "mutates": { "type": "boolean" },
+        "idempotent": { "type": "boolean" },
+        "scopes": { "type": "array", "items": { "type": "string", "pattern": "^[a-z_]+:[a-z_]+$" } },
+        "consent": { "type": "array", "items": { "type": "string" } },
+        "preconditions": { "type": "array", "items": { "type": "string" }, "description": "CEL expressions evaluated before execution." },
+        "transition": {
+          "type": "object",
+          "required": ["from", "to"],
+          "additionalProperties": false,
+          "properties": {
+            "from": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "to": { "type": "string" }
+          }
+        },
+        "emits": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z][A-Za-z]+$" } },
+        "errors": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z][A-Z_]+$" } },
+        "input": { "type": "object" },
+        "output": { "type": "object" }
+      }
+    }
+  }
+}

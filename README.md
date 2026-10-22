@@ -64,6 +64,7 @@ Details: [Technical Paper 02: Reference Architecture](docs/architecture/02-refer
 | [Concept Paper 01](docs/concept/01-agent-native-concept-paper.md) | What an agent-native system is, and why Tamarind is one |
 | [Technical Paper 02](docs/architecture/02-reference-architecture.md) | Reference architecture: components, contracts, data model, security |
 | [Architecture Decision Records](docs/adr/README.md) | Key technical decisions and their status |
+| [Specifications](docs/specs/README.md) | Tool catalogue, data model and the SME working-capital reference product |
 
 ## Roadmap
 
