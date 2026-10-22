@@ -2,10 +2,10 @@
 
 | | |
 |---|---|
-| **Status** | Proposed: **decision needed from the owner** |
+| **Status** | Accepted (2026-10-22) |
 | **Date** | 2026-10-22 |
 | **Decision owner** | Christopher Tun |
-| **Related** | [LICENSE](../../LICENSE) (currently MIT) |
+| **Related** | [LICENSE](../../LICENSE), [NOTICE](../../NOTICE) |
 
 > This ADR summarises common trade-offs between open-source licences. It is not legal advice; confirm the final choice with a lawyer.
 
@@ -41,12 +41,13 @@ Tamarind's likely adopters include banks, microfinance institutions and fintechs
 - **Pros:** open community version, plus revenue from organisations that need other terms.
 - **Cons:** requires contributor licence agreements (CLAs) to keep relicensing rights; can discourage contributors; more governance overhead.
 
-## Decision (recommendation)
+## Decision
 
-**Option B: switch to Apache-2.0 now**, while relicensing is simple, and require **Developer Certificate of Origin (DCO)** sign-off on commits (see [CONTRIBUTING.md](../../CONTRIBUTING.md)).
+**Option B: Apache-2.0.** The project was relicensed from MIT on 2026-10-22, while there was still a single copyright holder. Commits require **Developer Certificate of Origin (DCO)** sign-off on commits (see [CONTRIBUTING.md](../../CONTRIBUTING.md)).
 
 ## Consequences
 
-- Replace the LICENSE file with Apache-2.0 and add a NOTICE file.
+- LICENSE replaced with Apache-2.0 and a NOTICE file added (done 2026-10-22).
+- Contributions are accepted under Apache-2.0 terms (section 5 of the licence), with DCO sign-off.
 - Code from GPL-licensed projects (e.g. Frappe Lending) must not be copied into Tamarind; learning from their designs is fine.
 - If protection against closed hosted forks becomes important later, it can be addressed with trademarks and governance, or by a new ADR.

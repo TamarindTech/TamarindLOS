@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed: **decision needed from the owner** |
+| **Status** | Product: Accepted (2026-10-22) · Market: Proposed, country pending |
 | **Date** | 2026-10-22 |
 | **Decision owner** | Christopher Tun |
 | **Related** | [Reference Architecture §8.2, §12, §19](../architecture/02-reference-architecture.md) |
@@ -38,10 +38,10 @@ Two choices are bundled here: **which product** and **which market**.
 
 Candidate countries should be chosen by **design-partner availability** and data-provider access.
 
-## Decision (recommendation)
+## Decision
 
-- **Product: SME working-capital loan (unsecured).** It shows the most agent-native value and exercises every part of the architecture.
-- **Market: a jurisdiction-neutral baseline pack first, followed by the first country pack** as soon as a design partner is confirmed.
+- **Product (accepted): SME working-capital loan (unsecured).** It shows the most agent-native value and exercises every part of the architecture.
+- **Market (proposed): a jurisdiction-neutral baseline pack first, followed by the first country pack** as soon as a design partner is confirmed.
 
 **Open question for the owner:** which country and which design partner to target for the first country pack.
 

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Accepted (2026-10-22) |
 | **Date** | 2026-10-22 |
 | **Decision owner** | Christopher Tun |
 | **Related** | [Reference Architecture §3, §9, §16](../architecture/02-reference-architecture.md) |
@@ -44,7 +44,7 @@ The architecture already puts a clean boundary between the agent runtime and the
 - **Pros:** one backend language; smallest footprint.
 - **Cons:** thinner AI and document-processing ecosystem; would push contributors to rebuild tooling that already exists in Python.
 
-## Decision (recommendation)
+## Decision
 
 **Option B.** Go for the core, Tool Gateway and adapters; Python for the agent runtime; TypeScript (React) for the officer console and borrower portal.
 

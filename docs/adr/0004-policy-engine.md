@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | Proposed |
+| **Status** | Accepted (2026-10-22) |
 | **Date** | 2026-10-22 |
 | **Decision owner** | Christopher Tun |
 | **Related** | [Reference Architecture §7, §8](../architecture/02-reference-architecture.md), [ADR-0001](0001-core-language.md) |
@@ -46,7 +46,7 @@ Every evaluation must return the **policy version and matched rules** for the au
 - **Pros:** most familiar format for business users.
 - **Cons:** building and maintaining an engine; weaker guarantees and tooling.
 
-## Decision (recommendation)
+## Decision
 
 **Option D.**
 

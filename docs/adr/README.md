@@ -19,10 +19,10 @@ Copy [0000-template.md](0000-template.md) to the next free number, fill it in, s
 
 | ADR | Title | Status | Decision owner |
 |---|---|---|---|
-| [0001](0001-core-language.md) | Core implementation languages | Proposed | Christopher Tun |
-| [0002](0002-first-reference-product-and-market.md) | First reference product and market | Proposed | Christopher Tun |
-| [0003](0003-licence.md) | Project licence | Proposed | Christopher Tun |
-| [0004](0004-policy-engine.md) | Policy engine | Proposed | Christopher Tun |
+| [0001](0001-core-language.md) | Core implementation languages: Go core, Python agents, TypeScript UI | Accepted | Christopher Tun |
+| [0002](0002-first-reference-product-and-market.md) | First reference product (SME working capital) and market | Product accepted · country pending | Christopher Tun |
+| [0003](0003-licence.md) | Project licence: Apache-2.0 | Accepted | Christopher Tun |
+| [0004](0004-policy-engine.md) | Policy engine: Cedar + CEL | Accepted | Christopher Tun |
 
 ### Planned
 
