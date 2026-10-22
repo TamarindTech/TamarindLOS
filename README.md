@@ -40,6 +40,17 @@ flowchart LR
 
 Details: [Technical Paper 02: Reference Architecture](docs/architecture/02-reference-architecture.md).
 
+## Technology
+
+| Layer | Choice | Decision |
+|---|---|---|
+| Core and Tool Gateway | Go | [ADR-0001](docs/adr/0001-core-language.md) |
+| Agent runtime | Python | [ADR-0001](docs/adr/0001-core-language.md) |
+| Officer console and borrower portal | TypeScript (React) | [ADR-0001](docs/adr/0001-core-language.md) |
+| Policy | Cedar (authorization) and CEL (business rules) | [ADR-0004](docs/adr/0004-policy-engine.md) |
+| Data | PostgreSQL and S3-compatible object storage | [Reference Architecture](docs/architecture/02-reference-architecture.md) |
+| First reference product | SME working-capital loan | [ADR-0002](docs/adr/0002-first-reference-product-and-market.md) |
+
 ## Scope
 
 | In scope | Out of scope (integrate instead) |
@@ -70,7 +81,7 @@ Tamarind is at the stage where design feedback is the most valuable contribution
 
 ## License
 
-Currently released under the [MIT License](LICENSE). The project licence is under review in [ADR-0003](docs/adr/0003-licence.md).
+Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) and [ADR-0003](docs/adr/0003-licence.md).
 
 ## Disclaimer
 
