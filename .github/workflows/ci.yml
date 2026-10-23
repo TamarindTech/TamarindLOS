@@ -24,13 +24,15 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+    env:
+      GOTOOLCHAIN: local # same as the Docker build: never switch toolchains silently
     defaults:
       run:
         working-directory: services/core
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.24.x"
           cache: false
@@ -64,18 +66,20 @@ jobs:
         if: always()
         run: git status --porcelain -- go.mod go.sum
 
-      # Until go.sum is committed, publish the one CI generated so it can be added to the repo.
-      - name: Upload go.sum
-        uses: actions/upload-artifact@v4
+      # Until go.sum is committed, publish the module files CI resolved so they can be added to the repo.
+      - name: Upload module files
+        uses: actions/upload-artifact@v6
         with:
-          name: go-sum
-          path: services/core/go.sum
+          name: go-modules
+          path: |
+            services/core/go.mod
+            services/core/go.sum
 
   image:
     name: Container image and Compose file
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build image
         run: docker build -f services/core/Dockerfile -t tamarind-core:ci .
       - name: Validate image contents
