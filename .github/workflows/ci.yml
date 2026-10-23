@@ -37,9 +37,9 @@ jobs:
           go-version: "1.24.x"
           cache: false
 
-      - name: Resolve modules
+      - name: Check modules are tidy and verified
         run: |
-          go mod tidy
+          go mod tidy -diff
           go mod verify
 
       - name: Check formatting
@@ -61,19 +61,6 @@ jobs:
         env:
           TAMARIND_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
         run: go test -race -count=1 ./...
-
-      - name: Show module file changes
-        if: always()
-        run: git status --porcelain -- go.mod go.sum
-
-      # Until go.sum is committed, publish the module files CI resolved so they can be added to the repo.
-      - name: Upload module files
-        uses: actions/upload-artifact@v6
-        with:
-          name: go-modules
-          path: |
-            services/core/go.mod
-            services/core/go.sum
 
   image:
     name: Container image and Compose file

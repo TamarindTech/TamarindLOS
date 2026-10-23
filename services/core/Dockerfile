@@ -3,11 +3,10 @@
 
 FROM golang:1.24-alpine AS build
 WORKDIR /src/services/core
-COPY services/core/go.mod services/core/go.sum* ./
-RUN go mod download
+COPY services/core/go.mod services/core/go.sum ./
+RUN go mod download && go mod verify
 COPY services/core/ ./
-# go mod tidy fills in go.sum on the first build if it has not been committed yet.
-RUN go mod tidy && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/tamarind ./cmd/tamarind
+RUN CGO_ENABLED=0 go build -mod=readonly -trimpath -ldflags="-s -w" -o /out/tamarind ./cmd/tamarind
 
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /app
