@@ -95,7 +95,7 @@ Every call, whether through REST or MCP, carries an envelope in addition to the 
 | Interface | Mapping |
 |---|---|
 | **REST** | `POST /v1/tools/{name}` with `{ "input": {...}, ...envelope }`. Read tools also get `GET` routes, e.g. `GET /v1/applications/{id}`. |
-| **MCP tools** | Each tool is exposed under its name, filtered to the caller's scopes. Envelope fields go in the tool arguments under `_envelope`. |
+| **MCP tools** | Each tool is exposed with dots replaced by underscores (`application.create` → `application_create`), because several MCP clients only accept `[a-zA-Z0-9_-]` in tool names. Only tools the caller holds scopes for are listed. Envelope fields go in the tool arguments under `_envelope`. See [ADR-0005](../adr/0005-mcp-server-phase-0.md). |
 | **MCP resources** | `tamarind://applications/{id}/snapshot`, `tamarind://applications/{id}/decision-records`, `tamarind://products/{code}/policy` |
 | **Events** | Each `emits` entry is a domain event published through the outbox to agents and webhooks. |
 

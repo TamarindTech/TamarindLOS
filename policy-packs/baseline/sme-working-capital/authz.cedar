@@ -84,6 +84,20 @@ permit (
   resource
 );
 
+// Staff may respond to approval requests. When a request is approved, the gated tool
+// runs as the responder and is authorized again for them, so a responder can only
+// approve actions they are themselves allowed to take.
+permit (
+  principal,
+  action == Tamarind::Action::"approval.respond",
+  resource
+)
+when {
+  principal in Tamarind::Role::"loan_officer" ||
+  principal in Tamarind::Role::"credit_approver" ||
+  principal in Tamarind::Role::"operations"
+};
+
 // --- Agents -------------------------------------------------------------------
 
 permit (

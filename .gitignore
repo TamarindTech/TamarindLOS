@@ -1,0 +1,14 @@
+# Build output
+/services/core/tamarind
+/bin/
+*.test
+*.out
+
+# Local configuration
+.env
+deploy/compose/.env
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store

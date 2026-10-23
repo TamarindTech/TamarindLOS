@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Core service — validate, vet, test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    defaults:
+      run:
+        working-directory: services/core
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: false
+
+      - name: Resolve modules
+        run: |
+          go mod tidy
+          go mod verify
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then echo "Run gofmt on:"; echo "$unformatted"; exit 1; fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Validate specs (tool catalogue, policy pack, state machine, CEL rule tests, Cedar)
+        run: >
+          go run ./cmd/tamarind validate
+          --tools ../../tools
+          --pack ../../policy-packs/baseline/sme-working-capital
+          --principals ../../deploy/compose/principals.yaml
+
+      - name: Test (unit + end-to-end against PostgreSQL 16)
+        env:
+          TAMARIND_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
+        run: go test -race -count=1 ./...
+
+      - name: Show module file changes
+        if: always()
+        run: git status --porcelain -- go.mod go.sum
+
+      # Until go.sum is committed, publish the one CI generated so it can be added to the repo.
+      - name: Upload go.sum
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-sum
+          path: services/core/go.sum
+
+  image:
+    name: Container image and Compose file
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f services/core/Dockerfile -t tamarind-core:ci .
+      - name: Validate image contents
+        run: docker run --rm --entrypoint tamarind tamarind-core:ci validate
+      - name: Validate Compose file
+        run: docker compose -f deploy/compose/docker-compose.yml config --quiet

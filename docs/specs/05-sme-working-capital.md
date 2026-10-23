@@ -127,6 +127,7 @@ The rules are inputs to the recommendation, not the decision itself. The underwr
 - **Approval authority:** credit approvers approve up to 25,000; senior credit approvers up to 100,000.
 - **Least privilege for agents:** intake, verification and underwriting agents each get only their action group.
 - **Borrowers:** act only on their own application, through a narrow set of tools.
+- **Approval responses:** loan officers, credit approvers and operations staff may respond to approval requests. An approved call then runs as the responder and is authorized again for them, so nobody can approve an action they could not take themselves.
 
 When an agent acts on behalf of a user, the gateway authorizes both and requires both to be allowed.
 

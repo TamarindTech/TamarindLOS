@@ -1,0 +1,55 @@
+# Tamarind LOS — "Lite" topology for local development and demos.
+#
+#   cd deploy/compose
+#   docker compose up --build
+#
+# Then call http://localhost:8080 (REST) or http://localhost:8080/mcp (MCP) with one of
+# the development tokens in principals.yaml. Never expose this setup to real data.
+
+name: tamarind
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tamarind_admin
+      POSTGRES_PASSWORD: ${TAMARIND_ADMIN_DB_PASSWORD:-change-me-admin}
+      POSTGRES_DB: tamarind
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tamarind_admin -d tamarind"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Applies migrations, sets the application role's password and seeds demo tenants.
+  migrate:
+    build:
+      context: ../..
+      dockerfile: services/core/Dockerfile
+    image: tamarind-core:dev
+    command: ["migrate", "--seed"]
+    environment:
+      TAMARIND_ADMIN_DATABASE_URL: postgres://tamarind_admin:${TAMARIND_ADMIN_DB_PASSWORD:-change-me-admin}@postgres:5432/tamarind?sslmode=disable
+      TAMARIND_APP_DB_PASSWORD: ${TAMARIND_APP_DB_PASSWORD:-change-me-app}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # The tool gateway. Connects as tamarind_app, so row-level security always applies.
+  core:
+    image: tamarind-core:dev
+    command: ["serve"]
+    environment:
+      TAMARIND_DATABASE_URL: postgres://tamarind_app:${TAMARIND_APP_DB_PASSWORD:-change-me-app}@postgres:5432/tamarind?sslmode=disable
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:

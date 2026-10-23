@@ -1,0 +1,57 @@
+# DEVELOPMENT ONLY — static bearer tokens for local demos and tests.
+# Never use this file with real data. Production deployments must replace it with
+# OIDC (people) and OAuth 2.1 client credentials (agents and systems).
+
+tenants:
+  demo:
+    name: Demo Lender
+  other:
+    name: Other Lender (used to test tenant isolation)
+
+principals:
+  # People
+  - id: user:officer.ana
+    name: Ana (loan officer)
+    tenant: demo
+    roles: [loan_officer]
+    scopes: ["*"]
+    token: dev-officer-ana
+
+  - id: user:officer.chai
+    name: Chai (loan officer)
+    tenant: demo
+    roles: [loan_officer]
+    scopes: ["*"]
+    token: dev-officer-chai
+
+  - id: user:approver.ben
+    name: Ben (credit approver, limit 25,000)
+    tenant: demo
+    roles: [credit_approver]
+    scopes: ["*"]
+    token: dev-approver-ben
+
+  # Agents
+  - id: agent:intake
+    name: Intake agent
+    tenant: demo
+    roles: [agent_intake]
+    trust_level: L3
+    scopes: [applications:read, applications:write, parties:write, documents:request, tasks:write]
+    token: dev-agent-intake
+
+  - id: agent:underwriting
+    name: Underwriting analyst agent
+    tenant: demo
+    roles: [agent_underwriting]
+    trust_level: L3
+    scopes: [applications:read, policy:evaluate, decisions:recommend]
+    token: dev-agent-underwriting
+
+  # Another tenant
+  - id: user:officer.zoe
+    name: Zoe (loan officer at another lender)
+    tenant: other
+    roles: [loan_officer]
+    scopes: ["*"]
+    token: dev-other-zoe

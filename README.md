@@ -4,7 +4,7 @@
 
 Tamarind helps lenders take a loan application from intake to an approved, signed offer, with AI agents doing the routine work and people staying in control of credit decisions.
 
-> **Status: design phase.** The concept and architecture are being defined in the open. There is no runnable code yet. See the [roadmap](#roadmap) and [open decisions](docs/adr/README.md).
+> **Status: Phase 0 (foundations).** The core tool gateway runs end to end: REST and MCP, Cedar authorization, CEL preconditions, agent autonomy with human approvals, and a hash-chained audit log on PostgreSQL. It is not ready for real data. See the [roadmap](#roadmap) and [open decisions](docs/adr/README.md).
 
 ---
 
@@ -51,6 +51,16 @@ Details: [Technical Paper 02: Reference Architecture](docs/architecture/02-refer
 | Data | PostgreSQL and S3-compatible object storage | [Reference Architecture](docs/architecture/02-reference-architecture.md) |
 | First reference product | SME working-capital loan | [ADR-0002](docs/adr/0002-first-reference-product-and-market.md) |
 
+## Quick start
+
+```bash
+cd deploy/compose
+docker compose up --build
+curl -s localhost:8080/healthz
+```
+
+Then follow the walkthrough in [services/core/README.md](services/core/README.md): an AI agent creates an application over MCP, asks what it may do next, and a request it is not trusted to carry out alone goes to a human for approval.
+
 ## Scope
 
 | In scope | Out of scope (integrate instead) |
@@ -70,8 +80,8 @@ Details: [Technical Paper 02: Reference Architecture](docs/architecture/02-refer
 
 | Phase | Outcome | Status |
 |---|---|---|
-| **Design** | Concept, reference architecture, core decisions | In progress |
-| **0 — Foundations** | Tool gateway, domain core, state machine, audit ledger, REST + MCP adapters, mock connectors | Planned |
+| **Design** | Concept, reference architecture, core decisions, specifications | Done |
+| **0 — Foundations** | Tool gateway, domain core, state machine, audit ledger, REST + MCP adapters, mock connectors | In progress: gateway, REST + MCP, audit ledger and CI done; mock connectors next |
 | **1 — Assisted origination** | Officer console, document pipeline, intake and document agents, decision records | Planned |
 | **2 — Supervised automation** | Verification agent, policy packs, approval gates, evaluation harness, Fineract hand-off | Planned |
 | **3 — Ecosystem** | Borrower portal, external agent access, more connectors and jurisdiction packs | Planned |

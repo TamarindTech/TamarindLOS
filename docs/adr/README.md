@@ -23,6 +23,7 @@ Copy [0000-template.md](0000-template.md) to the next free number, fill it in, s
 | [0002](0002-first-reference-product-and-market.md) | First reference product (SME working capital) and market | Product accepted · country pending | Christopher Tun |
 | [0003](0003-licence.md) | Project licence: Apache-2.0 | Accepted | Christopher Tun |
 | [0004](0004-policy-engine.md) | Policy engine: Cedar + CEL | Accepted | Christopher Tun |
+| [0005](0005-mcp-server-phase-0.md) | MCP server for Phase 0: minimal built-in, official SDK in Phase 1 | Proposed | Christopher Tun |
 
 ### Planned
 
