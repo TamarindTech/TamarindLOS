@@ -62,7 +62,43 @@ Responses always have the same shape: `status` (`ok`, `approval_required` or `er
 
 ### Implemented tools (Phase 0)
 
-`application.create`, `application.get`, `application.next_actions`, `application.submit`, `application.withdraw`, `party.add`, `approval.respond`. Other catalogue tools return `NOT_IMPLEMENTED`.
+| Stage | Tools |
+|---|---|
+| Intake | `application.create`, `application.get`, `application.next_actions`, `application.submit`, `application.withdraw`, `party.add`, `consent.record` |
+| Verification | `kyc.run` (KYC for people, KYB for businesses), `sanctions.screen`, `credit.pull_report`, `bank.analyse_statements` |
+| Decision | `policy.evaluate`, `decision.recommend`, `decision.approve`, `decision.decline` |
+| Offer and booking | `offer.generate`, `offer.send`, `offer.accept`, `loan.handoff` |
+| Work | `approval.respond` |
+
+Document, task and refer tools return `NOT_IMPLEMENTED` until Phase 1.
+
+### The journey
+
+```
+draft --submit--> submitted --> intake --(all parties + consents)--> verification
+verification --(all mandatory checks clear)--> underwriting --approve--> decisioned
+decisioned --offer.send--> offered --offer.accept--> accepted --loan.handoff--> handed_off
+verification --(a check needs review)--> referred      any review state --decline--> closed
+```
+
+Arrows without a tool name are automatic: after every change the gateway recomputes the snapshot (completeness, check summary, cash-flow metrics) and follows the pack's system transitions.
+
+Who does what in the demo tenant:
+
+| Principal | Token | Role in the journey |
+|---|---|---|
+| `user:officer.ana`, `user:officer.chai` | `dev-officer-ana`, `dev-officer-chai` | Create applications, review agent proposals, generate and send offers |
+| `borrower:mekong` | `dev-borrower-mekong` | Sees only applications linked to it; records consent, accepts offers |
+| `agent:intake` | `dev-agent-intake` | Creates applications and adds parties (L3) |
+| `agent:verification` | `dev-agent-verification` | Runs checks (L3) |
+| `agent:underwriting` | `dev-agent-underwriting` | Evaluates policy; proposes recommendations (L2: a person must approve) |
+| `user:approver.ben` | `dev-approver-ben` | Approves up to 25,000; declines |
+| `user:approver.sara` | `dev-approver-sara` | Senior approver, up to 100,000 |
+| `user:ops.dana` | `dev-ops-dana` | Hands accepted loans to core banking |
+
+### Mock connectors
+
+KYC/KYB, sanctions, credit bureau, bank data, core banking and notifications are ports (`internal/connectors`) with deterministic mock adapters, so the system runs without external accounts. Results are healthy by default. Put a marker in a party's legal name to exercise other paths: `SANCTION` (confirmed sanctions match), `FAILKYC` (identity fails), `DEFAULT` (serious bureau default), `THIN` (weak cash flow), `STARTUP` (7 months trading).
 
 ## Try it
 
@@ -110,13 +146,16 @@ TAMARIND_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres
 
 The end-to-end tests create a throwaway database and check, among other things: schema validation, CEL preconditions, the pack's party rules, optimistic concurrency, idempotent replay, agent autonomy and approval requests, maker-checker, re-authorization of approved calls, tenant isolation, MCP `tools/list` filtering, audit-chain verification, tamper detection and that the application role cannot edit events.
 
+`TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event.
+
 ## Layout
 
 ```
 cmd/tamarind/         CLI: validate, migrate, serve, verify-audit
 internal/catalogue/   tool definitions and input validation
 internal/policy/      policy pack: CEL rules and guards, Cedar authorization, autonomy
-internal/gateway/     the invocation pipeline, handlers, events and audit chain
+internal/gateway/     the invocation pipeline, application snapshot, handlers, events and audit chain
+internal/connectors/  ports to external services, with mock adapters
 internal/api/         REST and MCP
 internal/auth/        development principals (to be replaced by OIDC / OAuth 2.1)
 internal/seed/        demo tenants and products
@@ -127,5 +166,7 @@ migrations/           SQL migrations (embedded in the binary)
 
 - Static tokens instead of OIDC / OAuth 2.1.
 - Minimal in-house MCP server ([ADR-0005](../../docs/adr/0005-mcp-server-phase-0.md)).
-- Documents, checks, decisions and offers are specified but not yet implemented.
+- Documents and evidence are specified but not implemented; completeness counts parties and consents only.
+- Connectors are mocks. Real adapters plug into the same ports.
+- Pricing uses the pack's reference rate; risk grading is not implemented yet.
 - No outbox relay or agent runtime yet; events are written but not delivered.

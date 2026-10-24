@@ -31,6 +31,20 @@ principals:
     scopes: ["*"]
     token: dev-approver-ben
 
+  - id: user:approver.sara
+    name: Sara (senior credit approver, limit 100,000)
+    tenant: demo
+    roles: [senior_credit_approver]
+    scopes: ["*"]
+    token: dev-approver-sara
+
+  - id: user:ops.dana
+    name: Dana (operations, books loans)
+    tenant: demo
+    roles: [operations]
+    scopes: ["*"]
+    token: dev-ops-dana
+
   # Agents
   - id: agent:intake
     name: Intake agent
@@ -47,6 +61,22 @@ principals:
     trust_level: L3
     scopes: [applications:read, policy:evaluate, decisions:recommend]
     token: dev-agent-underwriting
+
+  - id: agent:verification
+    name: Verification agent (KYC, KYB, sanctions, bureau, bank data)
+    tenant: demo
+    roles: [agent_verification]
+    trust_level: L3
+    scopes: [applications:read, checks:run, policy:evaluate]
+    token: dev-agent-verification
+
+  # Borrowers (portal users). A borrower acts only on applications linked to them.
+  - id: borrower:mekong
+    name: Mekong Trading Co. (borrower portal)
+    tenant: demo
+    roles: [borrower]
+    scopes: [applications:read, consents:write, offers:accept, documents:write]
+    token: dev-borrower-mekong
 
   # Another tenant
   - id: user:officer.zoe

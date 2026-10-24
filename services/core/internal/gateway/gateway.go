@@ -20,6 +20,7 @@ import (
 
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/auth"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/catalogue"
+	"github.com/TamarindTech/TamarindLOS/services/core/internal/connectors"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/policy"
 )
 
@@ -31,6 +32,9 @@ type Gateway struct {
 	DB        *pgxpool.Pool
 	Log       *slog.Logger
 	Now       func() time.Time
+	// Connectors reach external services. New installs the mock adapters; replace
+	// them before serving to use real providers.
+	Connectors connectors.Set
 
 	tenantIDs map[string]string // slug -> uuid
 	handlers  map[string]handler
@@ -40,6 +44,7 @@ type Gateway struct {
 func New(ctx context.Context, cat *catalogue.Catalogue, pack *policy.Pack, reg *auth.Registry, db *pgxpool.Pool, log *slog.Logger) (*Gateway, error) {
 	g := &Gateway{Catalogue: cat, Pack: pack, Registry: reg, DB: db, Log: log, Now: time.Now, tenantIDs: map[string]string{}}
 	g.handlers = g.registerHandlers()
+	g.Connectors = connectors.Mocks(func() time.Time { return g.Now() })
 	for slug := range reg.Tenants {
 		var id string
 		if err := db.QueryRow(ctx, `SELECT id::text FROM tenants WHERE slug = $1`, slug).Scan(&id); err != nil {
@@ -70,6 +75,8 @@ type call struct {
 	app       *appRecord // loaded when the input names an application
 	events    []Event
 	stateFrom string
+	// proposedBy is set when a human executes a call an agent proposed (approval.respond).
+	proposedBy string
 }
 
 // Invoke runs a tool call end to end.
@@ -189,7 +196,7 @@ func (g *Gateway) run(ctx context.Context, tx pgx.Tx, c *call, applyAutonomy boo
 		return nil, err
 	}
 	if appID != "" {
-		if c.app, err = loadApplication(ctx, tx, appID, c.tool.Mutates); err != nil {
+		if c.app, err = g.loadApplication(ctx, tx, appID, c.tool.Mutates); err != nil {
 			return nil, err
 		}
 		c.stateFrom = c.app.State
@@ -256,9 +263,15 @@ func (g *Gateway) run(ctx context.Context, tx pgx.Tx, c *call, applyAutonomy boo
 		return nil, err
 	}
 
-	// 6. State transitions (tool transition, then automatic system transitions).
+	// 6. State: the tool's own transition, then a fresh snapshot (completeness, checks,
+	// metrics) and any automatic system transitions it unlocks.
 	if c.tool.Transition != nil {
 		if err := g.transition(ctx, tx, c, c.tool.Transition.To, "tool"); err != nil {
+			return nil, err
+		}
+	}
+	if c.app != nil && c.tool.Mutates && c.tool.Name != "approval.respond" {
+		if err := g.refresh(ctx, tx, c); err != nil {
 			return nil, err
 		}
 		if err := g.runSystemTransitions(ctx, tx, c); err != nil {
@@ -312,9 +325,35 @@ func (g *Gateway) celVars(c *call) map[string]any {
 	vars := map[string]any{"product": g.Pack.ProductData, "now": g.Now().UTC()}
 	if c.app != nil {
 		vars["application"] = c.app.celMap()
-		vars["checks"] = c.app.Checks
+		vars["checks"] = c.app.ChecksSummary
+		vars["metrics"] = c.app.Metrics
+		// The offer named in the input, or else the most recent one.
+		var o *offerRecord
+		if id, ok := c.input["offer_id"].(string); ok {
+			o = c.app.offer(id)
+		} else if n := len(c.app.Offers); n > 0 {
+			o = &c.app.Offers[n-1]
+		}
+		if o != nil {
+			vars["offer"] = map[string]any{"offer_id": o.ID, "status": o.Status, "expires_at": o.ExpiresAt.UTC(),
+				"amount_minor": o.AmountMinor, "term_months": int64(o.TermMonths), "rate_apr_bps": int64(o.RateAPRBps)}
+		}
 	}
 	return vars
+}
+
+// refresh reloads the application snapshot after a change and stores derived values.
+func (g *Gateway) refresh(ctx context.Context, tx pgx.Tx, c *call) error {
+	version := c.app.StateVersion
+	app, err := g.loadApplication(ctx, tx, c.app.ID, false)
+	if err != nil {
+		return err
+	}
+	app.StateVersion = version
+	c.app = app
+	_, err = tx.Exec(ctx, `UPDATE applications SET completeness_pct = $2 WHERE id = $1 AND completeness_pct <> $2`,
+		app.ID, app.CompletenessPct)
+	return err
 }
 
 // checkConsent enforces the tool's consent requirements for the party in the input.

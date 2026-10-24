@@ -19,6 +19,12 @@ $Tokens = @{
     Ana     = "dev-officer-ana"
     Chai    = "dev-officer-chai"
     Zoe     = "dev-other-zoe"
+    Ben     = "dev-approver-ben"
+    Sara    = "dev-approver-sara"
+    Dana    = "dev-ops-dana"
+    Verify  = "dev-agent-verification"
+    Under   = "dev-agent-underwriting"
+    Mekong  = "dev-borrower-mekong"
 }
 
 function Invoke-Api([string]$Path, [string]$Token, [hashtable]$Body) {
@@ -160,9 +166,87 @@ if ($names -contains "application_create" -and -not ($names -contains "approval_
 }
 Write-Host ("         {0}" -f ($names -join ", ")) -ForegroundColor DarkGray
 
+Write-Host ""
+Write-Host "6. One loan from intake to booking" -ForegroundColor Cyan
+$r = Invoke-Tool $Tokens.Ana "application.create" @{
+    product_code = "SME-WC"; requested_amount_minor = 5000000; currency = "USD"; requested_term_months = 12
+    purpose = "working capital for peak season"; borrower = "borrower:mekong"
+}
+Check "Ana opens a 50,000 application for the Mekong portal user" $r "ok"
+$loanId = $r.result.application_id
+$r = Invoke-Tool $Tokens.Ana "party.add" @{
+    application_id = $loanId; kind = "business"; role = "applicant"; legal_name = "Mekong Trading Co."
+    registration_number = "0105561234567"; country = "TH"
+}
+$applicant = $r.result.party_id
+$r = Invoke-Tool $Tokens.Ana "party.add" @{
+    application_id = $loanId; kind = "individual"; role = "director"; legal_name = "Somchai P."
+    date_of_birth = "1980-04-02"; ownership_pct = 60
+}
+$director = $r.result.party_id
+$r = Invoke-Tool $Tokens.Ana "application.submit" @{ application_id = $loanId }
+Check "parties added and submitted" $r "ok"
+Write-Host ("         state '{0}': waiting for the borrower's consent" -f $r.result.state) -ForegroundColor DarkGray
+
+$click = @{ method = "portal_click"; ip = "203.0.113.10" }
+foreach ($c in @(@($applicant, "kyc"), @($applicant, "credit_bureau"), @($applicant, "bank_data"), @($director, "kyc"))) {
+    $r = Invoke-Tool $Tokens.Mekong "consent.record" @{ application_id = $loanId; party_id = $c[0]; scope = $c[1]; evidence = $click }
+}
+Check "the borrower gives consent in the portal" $r "ok"
+Write-Host ("         intake complete, state moved to '{0}' by itself" -f $r.result.state) -ForegroundColor DarkGray
+
+$vr = @{ reason = "demo: verification run" }
+$steps = @(
+    @("kyc.run", @{ party_id = $director }),
+    @("kyc.run", @{ party_id = $applicant }),
+    @("sanctions.screen", @{ party_id = $applicant }),
+    @("sanctions.screen", @{ party_id = $director }),
+    @("credit.pull_report", @{ party_id = $applicant; report_type = "commercial" }),
+    @("bank.analyse_statements", @{ party_id = $applicant; source = "open_banking" })
+)
+foreach ($s in $steps) {
+    $in = $s[1]; $in.application_id = $loanId
+    $r = Invoke-Tool $Tokens.Verify $s[0] $in $vr
+    Write-Host ("         {0,-24} {1}" -f $s[0], $r.result.status) -ForegroundColor DarkGray
+}
+Check "the verification agent runs six checks (mock providers)" $r "ok"
+Write-Host ("         all clear, state is now '{0}'" -f $r.result.state) -ForegroundColor DarkGray
+
+$uw = @{ reason = "demo: underwriting analysis" }
+$r = Invoke-Tool $Tokens.Under "policy.evaluate" @{ application_id = $loanId } $uw
+Check "the underwriting agent evaluates policy (12 CEL rules)" $r "ok"
+Write-Host ("         outcome '{0}', DSCR {1}" -f $r.result.outcome, $r.result.metrics.dscr) -ForegroundColor DarkGray
+$r = Invoke-Tool $Tokens.Under "decision.recommend" @{
+    application_id = $loanId; outcome = "approve"; confidence = 0.86
+    terms = @{ amount_minor = 5000000; term_months = 12; rate_apr_bps = 1900 }
+    reason_codes = @("STRONG_CASH_FLOW", "CLEAN_BUREAU")
+    narrative = "Four years trading, DSCR above policy, clean bureau and screening."
+} $uw
+Check "it proposes an approval (autonomy L2)" $r "approval_required"
+$r = Invoke-Tool $Tokens.Chai "approval.respond" @{ approval_request_id = $r.approval_request_id; decision = "approve"; note = "memo reviewed" }
+Check "Chai reviews and records the recommendation" $r "ok"
+$recId = $r.result.result.decision_record_id
+
+$r = Invoke-Tool $Tokens.Ben "decision.approve" @{ application_id = $loanId; recommendation_id = $recId }
+Check "Ben cannot approve: 50,000 is above his limit" $r "error" "POLICY_DENIED"
+$r = Invoke-Tool $Tokens.Sara "decision.approve" @{ application_id = $loanId; recommendation_id = $recId }
+Check "Sara (senior approver) approves" $r "ok"
+$decisionId = $r.result.decision_record_id
+
+$r = Invoke-Tool $Tokens.Ana "offer.generate" @{ application_id = $loanId; decision_record_id = $decisionId }
+$offerId = $r.result.offer_id
+Write-Host ("         offer: 12 payments of {0:N2}" -f ($r.result.schedule.monthly_payment_minor / 100)) -ForegroundColor DarkGray
+$r = Invoke-Tool $Tokens.Ana "offer.send" @{ offer_id = $offerId; channel = "portal" }
+Check "Ana generates and sends the offer" $r "ok"
+$r = Invoke-Tool $Tokens.Mekong "offer.accept" @{ offer_id = $offerId; signature = $click }
+Check "the borrower accepts in the portal" $r "ok"
+$r = Invoke-Tool $Tokens.Dana "loan.handoff" @{ application_id = $loanId; target = "mock-core" }
+Check "Dana (operations) books the loan" $r "ok"
+Write-Host ("         state '{0}', core banking loan id {1}" -f $r.result.state, $r.result.external_loan_id) -ForegroundColor DarkGray
+
 if (-not $SkipAuditCheck -and (Get-Command docker -ErrorAction SilentlyContinue)) {
     Write-Host ""
-    Write-Host "6. Tamper-evident audit log" -ForegroundColor Cyan
+    Write-Host "7. Tamper-evident audit log" -ForegroundColor Cyan
     # Docker writes progress messages to stderr, which Windows PowerShell 5.1 turns into
     # errors. Run it through cmd so stderr is discarded before PowerShell sees it.
     $out = cmd /c "docker compose exec -T core tamarind verify-audit --tenant demo 2>nul"

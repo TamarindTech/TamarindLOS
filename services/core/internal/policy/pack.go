@@ -29,6 +29,22 @@ type Product struct {
 	TermMonths        Range  `json:"term_months"`
 	Repayment         string `json:"repayment"`
 	OfferValidityDays int    `json:"offer_validity_days"`
+	Pricing           struct {
+		Method        string         `json:"method"`
+		APRBpsByGrade map[string]int `json:"apr_bps_by_grade"`
+	} `json:"pricing"`
+}
+
+// ReferenceAPRBps is the rate used to estimate repayments before pricing is decided
+// (the middle risk grade, B, when present).
+func (p Product) ReferenceAPRBps() int {
+	if r, ok := p.Pricing.APRBpsByGrade["B"]; ok {
+		return r
+	}
+	for _, r := range p.Pricing.APRBpsByGrade {
+		return r
+	}
+	return 2000
 }
 
 // PartyRequirement is one entry of parties.required.
@@ -45,6 +61,25 @@ type DocumentRequirement struct {
 	Party        json.RawMessage `json:"party"`
 	Required     bool            `json:"required"`
 	RequiredWhen string          `json:"required_when"`
+}
+
+// CheckRequirement is one entry of checks: which check must run for which parties.
+type CheckRequirement struct {
+	Type      string     `json:"type"`   // kyb | kyc | sanctions | credit_bureau | bank_analysis
+	Report    string     `json:"report"` // for credit_bureau: commercial | consumer
+	Party     StringList `json:"party"`  // role, list of roles, or "all"
+	Mandatory bool       `json:"mandatory"`
+	Consent   string     `json:"consent"`
+}
+
+// AppliesTo reports whether the requirement covers a party role.
+func (r CheckRequirement) AppliesTo(role string) bool {
+	for _, p := range r.Party {
+		if p == "all" || p == role {
+			return true
+		}
+	}
+	return false
 }
 
 // Authority is an approval limit for a role, in minor units.
@@ -64,6 +99,7 @@ type Pack struct {
 		Required []PartyRequirement `json:"required"`
 	} `json:"parties"`
 	Documents         []DocumentRequirement `json:"documents"`
+	Checks            []CheckRequirement    `json:"checks"`
 	RulesFile         string                `json:"rules"`
 	StateMachineFile  string                `json:"state_machine"`
 	AuthorizationFile string                `json:"authorization"`

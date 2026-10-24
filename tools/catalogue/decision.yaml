@@ -15,7 +15,7 @@ tools:
       required: [application_id]
       properties:
         application_id: { type: string, format: uuid }
-        rule_sets: { type: array, items: { type: string, enum: [eligibility, credit, documents] } }
+        rule_sets: { type: array, items: { type: string, enum: [eligibility, compliance, credit] } }
     output:
       type: object
       properties:

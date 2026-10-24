@@ -311,7 +311,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// --- Unimplemented tools are explicit. ---
-	r = e.call(officer, "kyc.run", map[string]any{"application_id": appID, "party_id": appID}, nil)
+	r = e.call(officer, "task.create", map[string]any{"application_id": appID}, nil)
 	expect(t, r, "error", "NOT_IMPLEMENTED")
 
 	// --- MCP. ---

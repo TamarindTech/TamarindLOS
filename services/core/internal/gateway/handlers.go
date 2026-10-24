@@ -27,6 +27,19 @@ func (g *Gateway) registerHandlers() map[string]handler {
 		"application.withdraw":     g.applicationWithdraw,
 		"party.add":                g.partyAdd,
 		"approval.respond":         g.approvalRespond,
+		"consent.record":           g.consentRecord,
+		"kyc.run":                  g.kycRun,
+		"sanctions.screen":         g.sanctionsScreen,
+		"credit.pull_report":       g.creditPullReport,
+		"bank.analyse_statements":  g.bankAnalyse,
+		"policy.evaluate":          g.policyEvaluate,
+		"decision.recommend":       g.decisionRecommend,
+		"decision.approve":         g.decisionApprove,
+		"decision.decline":         g.decisionDecline,
+		"offer.generate":           g.offerGenerate,
+		"offer.send":               g.offerSend,
+		"offer.accept":             g.offerAccept,
+		"loan.handoff":             g.loanHandoff,
 	}
 }
 
@@ -68,14 +81,22 @@ func (g *Gateway) applicationCreate(ctx context.Context, tx pgx.Tx, c *call) (an
 	if channel == "" {
 		channel = map[bool]string{true: "agent", false: "branch"}[c.p.IsAgent()]
 	}
+	borrower := str(c.input, "borrower")
+	if borrower != "" {
+		bp, ok := g.Registry.ByID(borrower)
+		if !ok || bp.Kind() != "borrower" || bp.Tenant != c.p.Tenant {
+			return nil, newErr(ErrValidation, "borrower %q is not a known borrower principal in this tenant", borrower)
+		}
+	}
 	ref := newReference(g.Now())
 	var id string
 	err = tx.QueryRow(ctx, `INSERT INTO applications
 		(id, tenant_id, product_id, reference, state_machine_version, requested_amount_minor, currency,
-		 requested_term_months, purpose, channel, created_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11) RETURNING id::text`,
+		 requested_term_months, purpose, channel, created_by, data)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11,
+		 CASE WHEN $12 = '' THEN '{}'::jsonb ELSE jsonb_build_object('borrower', $12::text) END) RETURNING id::text`,
 		newUUID(), c.tenantID, productID, ref, g.Pack.StateMachine.Version, amount, currency, term,
-		str(c.input, "purpose"), channel, c.p.ID).Scan(&id)
+		str(c.input, "purpose"), channel, c.p.ID, borrower).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
@@ -242,6 +263,7 @@ func (g *Gateway) applicationNextActions(_ context.Context, _ pgx.Tx, c *call) (
 		"allowed":           allow,
 		"blocked":           block,
 		"missing_parties":   g.missingParties(c.app),
+		"missing_consents":  nonNil(c.app.MissingConsents),
 		"missing_documents": g.Pack.RequiredDocuments(), // document tracking arrives in Phase 1
 	}, nil
 }
@@ -250,10 +272,10 @@ func (g *Gateway) applicationNextActions(_ context.Context, _ pgx.Tx, c *call) (
 
 // roleFor decides who must approve a gated call.
 func roleFor(tool string) string {
-	switch {
-	case strings.HasPrefix(tool, "decision."):
+	switch tool {
+	case "decision.approve", "decision.decline":
 		return "credit_approver"
-	case tool == "loan.handoff":
+	case "loan.handoff":
 		return "operations"
 	default:
 		return "loan_officer"
@@ -330,8 +352,15 @@ func (g *Gateway) approvalRespond(ctx context.Context, tx pgx.Tx, c *call) (any,
 			return nil, err
 		}
 		sub := &call{
-			p: c.p, tool: g.Catalogue.Tools[tool], input: orig, tenantID: c.tenantID,
+			p: c.p, tool: g.Catalogue.Tools[tool], input: orig, tenantID: c.tenantID, proposedBy: requestedBy,
 			env: Envelope{IdempotencyKey: "approval:" + reqID, Reason: "approved request " + reqID, TraceID: c.env.TraceID},
+		}
+		// The approver acts; whoever the proposer represented is still recorded.
+		if onBehalf != nil {
+			if d, ok := g.Registry.ByID(*onBehalf); ok {
+				sub.delegator = d
+				sub.env.OnBehalfOf = d.ID
+			}
 		}
 		// Record the decision first, on the application's event stream.
 		if c.app != nil {

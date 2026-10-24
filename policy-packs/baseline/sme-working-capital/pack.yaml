@@ -35,7 +35,7 @@ documents:
   - { type: tax_return, party: applicant, required: false }
 
 checks:
-  - { type: kyb, party: applicant, mandatory: true }
+  - { type: kyb, party: applicant, mandatory: true, consent: kyc }
   - { type: kyc, party: [director, beneficial_owner, guarantor], mandatory: true, consent: kyc }
   - { type: sanctions, party: all, mandatory: true }
   - { type: credit_bureau, report: commercial, party: applicant, mandatory: true, consent: credit_bureau }

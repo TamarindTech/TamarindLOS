@@ -21,6 +21,7 @@ tools:
         requested_term_months: { type: integer, minimum: 1 }
         purpose: { type: string, maxLength: 500 }
         channel: { type: string, enum: [branch, web, partner, agent] }
+        borrower: { type: string, pattern: "^borrower:", description: "Borrower portal principal linked to this application, e.g. borrower:mekong." }
     output:
       type: object
       properties:
