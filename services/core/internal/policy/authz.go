@@ -13,6 +13,7 @@ var actionGroups = map[string]string{
 	"application.get":          "read",
 	"application.next_actions": "read",
 	"policy.evaluate":          "read",
+	"approval.list":            "read",
 
 	"application.create":   "intake",
 	"application.update":   "intake",

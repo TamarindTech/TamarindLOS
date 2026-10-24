@@ -22,8 +22,6 @@ $Tokens = @{
     Ben     = "dev-approver-ben"
     Sara    = "dev-approver-sara"
     Dana    = "dev-ops-dana"
-    Verify  = "dev-agent-verification"
-    Under   = "dev-agent-underwriting"
     Mekong  = "dev-borrower-mekong"
 }
 
@@ -195,36 +193,31 @@ foreach ($c in @(@($applicant, "kyc"), @($applicant, "credit_bureau"), @($applic
 Check "the borrower gives consent in the portal" $r "ok"
 Write-Host ("         intake complete, state moved to '{0}' by itself" -f $r.result.state) -ForegroundColor DarkGray
 
-$vr = @{ reason = "demo: verification run" }
-$steps = @(
-    @("kyc.run", @{ party_id = $director }),
-    @("kyc.run", @{ party_id = $applicant }),
-    @("sanctions.screen", @{ party_id = $applicant }),
-    @("sanctions.screen", @{ party_id = $director }),
-    @("credit.pull_report", @{ party_id = $applicant; report_type = "commercial" }),
-    @("bank.analyse_statements", @{ party_id = $applicant; source = "open_banking" })
-)
-foreach ($s in $steps) {
-    $in = $s[1]; $in.application_id = $loanId
-    $r = Invoke-Tool $Tokens.Verify $s[0] $in $vr
-    Write-Host ("         {0,-24} {1}" -f $s[0], $r.result.status) -ForegroundColor DarkGray
+# From here the built-in agents (the "agents" service) take over: they wake on the
+# state change, run the checks and propose a decision, with no further calls from us.
+$proposal = $null
+for ($i = 0; $i -lt 45 -and -not $proposal; $i++) {
+    Start-Sleep -Seconds 1
+    $q = Invoke-Tool $Tokens.Chai "approval.list" @{ application_id = $loanId }
+    $proposal = @($q.result.approval_requests | Where-Object { $_.tool -eq "decision.recommend" }) | Select-Object -First 1
 }
-Check "the verification agent runs six checks (mock providers)" $r "ok"
-Write-Host ("         all clear, state is now '{0}'" -f $r.result.state) -ForegroundColor DarkGray
+if (-not $proposal) {
+    $script:Failed++
+    Write-Host "  [FAIL] no proposal from the agents after 45 seconds. Is the agents service running? (docker compose ps)" -ForegroundColor Red
+    Write-Host ("{0} passed, {1} failed." -f $script:Passed, $script:Failed) -ForegroundColor Red
+    exit 1
+}
+$app = (Invoke-Tool $Tokens.Ana "application.get" @{ application_id = $loanId }).result.application
+$script:Passed++
+Write-Host ("  [ok]   {0,-58} -> {1} checks" -f "the verification agent ran the checks on its own", @($app.checks).Count) -ForegroundColor Green
+foreach ($c in $app.checks) { Write-Host ("         {0,-14} {1}" -f $c.check_type, $c.status) -ForegroundColor DarkGray }
+$script:Passed++
+Write-Host ("  [ok]   {0,-58} -> {1}" -f "the underwriting agent proposed a decision (L2)", $proposal.proposal.outcome) -ForegroundColor Green
+Write-Host ("         DSCR {0}; reason codes {1}" -f $app.metrics.dscr, ($proposal.proposal.reason_codes -join ", ")) -ForegroundColor DarkGray
+($proposal.proposal.narrative -split "`n") | Select-Object -First 3 | ForEach-Object { Write-Host ("         | {0}" -f $_) -ForegroundColor DarkGray }
 
-$uw = @{ reason = "demo: underwriting analysis" }
-$r = Invoke-Tool $Tokens.Under "policy.evaluate" @{ application_id = $loanId } $uw
-Check "the underwriting agent evaluates policy (12 CEL rules)" $r "ok"
-Write-Host ("         outcome '{0}', DSCR {1}" -f $r.result.outcome, $r.result.metrics.dscr) -ForegroundColor DarkGray
-$r = Invoke-Tool $Tokens.Under "decision.recommend" @{
-    application_id = $loanId; outcome = "approve"; confidence = 0.86
-    terms = @{ amount_minor = 5000000; term_months = 12; rate_apr_bps = 1900 }
-    reason_codes = @("STRONG_CASH_FLOW", "CLEAN_BUREAU")
-    narrative = "Four years trading, DSCR above policy, clean bureau and screening."
-} $uw
-Check "it proposes an approval (autonomy L2)" $r "approval_required"
-$r = Invoke-Tool $Tokens.Chai "approval.respond" @{ approval_request_id = $r.approval_request_id; decision = "approve"; note = "memo reviewed" }
-Check "Chai reviews and records the recommendation" $r "ok"
+$r = Invoke-Tool $Tokens.Chai "approval.respond" @{ approval_request_id = $proposal.approval_request_id; decision = "approve"; note = "memo reviewed" }
+Check "Chai reviews the memo and records the recommendation" $r "ok"
 $recId = $r.result.result.decision_record_id
 
 $r = Invoke-Tool $Tokens.Ben "decision.approve" @{ application_id = $loanId; recommendation_id = $recId }

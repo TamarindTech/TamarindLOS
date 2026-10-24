@@ -4,7 +4,8 @@
 #   docker compose up --build
 #
 # Then call http://localhost:8080 (REST) or http://localhost:8080/mcp (MCP) with one of
-# the development tokens in principals.yaml. Never expose this setup to real data.
+# the development tokens in principals.yaml. The agents service starts working as soon
+# as applications reach verification. Never expose this setup to real data.
 
 name: tamarind
 
@@ -51,5 +52,30 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  # Built-in agents (Python). They follow the event feed and act only through the
+  # gateway, with their own tokens, so every call is authorized and audited.
+  # Set TAMARIND_LLM_PROVIDER=anthropic, ANTHROPIC_API_KEY and TAMARIND_LLM_MODEL to
+  # let a model draft credit memos; outcomes always come from the policy rules.
+  agents:
+    build:
+      context: ../..
+      dockerfile: services/agents/Dockerfile
+    image: tamarind-agents:dev
+    command: ["run"]
+    environment:
+      TAMARIND_URL: http://core:8080
+      TAMARIND_VERIFICATION_TOKEN: dev-agent-verification
+      TAMARIND_UNDERWRITING_TOKEN: dev-agent-underwriting
+      TAMARIND_LLM_PROVIDER: ${TAMARIND_LLM_PROVIDER:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      TAMARIND_LLM_MODEL: ${TAMARIND_LLM_MODEL:-}
+    volumes:
+      - agentstate:/home/agents/state
+    depends_on:
+      core:
+        condition: service_started
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  agentstate:

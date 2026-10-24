@@ -97,7 +97,7 @@ Every call, whether through REST or MCP, carries an envelope in addition to the 
 | **REST** | `POST /v1/tools/{name}` with `{ "input": {...}, ...envelope }`. Read tools also get `GET` routes, e.g. `GET /v1/applications/{id}`. |
 | **MCP tools** | Each tool is exposed with dots replaced by underscores (`application.create` → `application_create`), because several MCP clients only accept `[a-zA-Z0-9_-]` in tool names. Only tools the caller holds scopes for are listed. Envelope fields go in the tool arguments under `_envelope`. See [ADR-0005](../adr/0005-mcp-server-phase-0.md). |
 | **MCP resources** | `tamarind://applications/{id}/snapshot`, `tamarind://applications/{id}/decision-records`, `tamarind://products/{code}/policy` |
-| **Events** | Each `emits` entry is a domain event published through the outbox to agents and webhooks. |
+| **Events** | Each `emits` entry is a domain event, written in the same transaction as the state change. Subscribers read the tenant's events in order from `GET /v1/events?after={seq}&types=...&wait={seconds}` (scope `events:read`); with `wait`, the request long-polls and wakes when a new event commits (PostgreSQL `NOTIFY`). Outbound webhooks are planned on the same outbox. |
 
 ## 7. Initial catalogue
 
@@ -109,6 +109,6 @@ Every call, whether through REST or MCP, carries an envelope in addition to the 
 | [checks](../../tools/catalogue/checks.yaml) | `kyc.run`, `sanctions.screen`, `credit.pull_report`, `bank.analyse_statements` | medium | L3 (consent-gated) |
 | [decision](../../tools/catalogue/decision.yaml) | `policy.evaluate`, `decision.recommend`, `approve`, `decline`, `refer` | read–high | L4 / L2 / **gate** |
 | [offer](../../tools/catalogue/offer.yaml) | `offer.generate`, `send`, `accept`, `loan.handoff` | high | L3 / L2 / L0 / **gate** |
-| [work](../../tools/catalogue/work.yaml) | `task.create`, `task.complete`, `approval.respond` | low–high | L3 / L0 |
+| [work](../../tools/catalogue/work.yaml) | `task.create`, `task.complete`, `approval.list`, `approval.respond` | read–high | L4 / L3 / L0 |
 
-31 tools in total.
+32 tools in total.

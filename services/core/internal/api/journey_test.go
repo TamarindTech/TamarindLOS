@@ -2,7 +2,12 @@ package api_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -150,9 +155,23 @@ func TestLoanJourney(t *testing.T) {
 	r = e.call(uwAgent, "decision.recommend", map[string]any{"application_id": appID, "outcome": "approve",
 		"terms":        map[string]any{"amount_minor": 5000000, "term_months": 12, "rate_apr_bps": 1900},
 		"reason_codes": []string{"STRONG_CASH_FLOW", "CLEAN_BUREAU"}, "confidence": 0.86,
-		"narrative": "Four years trading, DSCR above policy, clean bureau and screening."}, uw)
+		"narrative": "Four years trading, DSCR above policy, clean bureau and screening.",
+		"models":    []map[string]any{{"kind": "rules", "id": "baseline/sme-working-capital", "version": "0.1.0"}}}, uw)
 	expect(t, r, "approval_required", "")
-	r = e.call(officer2, "approval.respond", map[string]any{"approval_request_id": r.ApprovalRequestID, "decision": "approve",
+	proposalID := r.ApprovalRequestID
+
+	// People find the proposal in their approval queue; agents cannot read the queue.
+	r = e.call(officer2, "approval.list", map[string]any{"application_id": appID}, nil)
+	expect(t, r, "ok", "")
+	queue := r.Result["approval_requests"].([]any)
+	if len(queue) != 1 || queue[0].(map[string]any)["approval_request_id"] != proposalID ||
+		queue[0].(map[string]any)["you_can_decide"] != true || queue[0].(map[string]any)["tool"] != "decision.recommend" {
+		t.Fatalf("approval queue: %+v", queue)
+	}
+	r = e.call(uwAgent, "approval.list", map[string]any{}, uw)
+	expect(t, r, "error", "POLICY_DENIED")
+
+	r = e.call(officer2, "approval.respond", map[string]any{"approval_request_id": proposalID, "decision": "approve",
 		"note": "memo reviewed"}, nil)
 	expect(t, r, "ok", "")
 	recID := sub(r.Result, "result")["decision_record_id"].(string)
@@ -295,4 +314,81 @@ func (e *env) withTenant(ctx context.Context, fn func(querier) error) error {
 func gatewayVerify(e *env) (bool, error) {
 	rep, err := gateway.VerifyChain(context.Background(), e.pool, e.g.TenantID("demo"))
 	return rep.Valid, err
+}
+
+func (e *env) feed(token, query string) (int, map[string]any) {
+	e.t.Helper()
+	req, _ := http.NewRequest("GET", e.srv.URL+"/v1/events?"+query, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		e.t.Fatalf("feed: %s", raw)
+	}
+	return res.StatusCode, out
+}
+
+// TestEventFeed: subscribers read events in order, filter by type and long-poll.
+func TestEventFeed(t *testing.T) {
+	e := setup(t)
+	go e.g.Listen(t.Context())
+
+	status, page := e.feed(verifier, "after=0&types=ApplicationStateChanged")
+	if status != http.StatusOK || len(page["events"].([]any)) != 0 {
+		t.Fatalf("empty feed: %d %+v", status, page)
+	}
+	if status, _ := e.feed(borrower, "after=0"); status != http.StatusForbidden {
+		t.Fatalf("borrowers have no events:read scope, got %d", status)
+	}
+	if status, _ := e.feed(verifier, "after=-1"); status != http.StatusBadRequest {
+		t.Fatalf("bad cursor accepted: %d", status)
+	}
+
+	// A long-polling reader wakes up when a submit commits.
+	type result struct {
+		page    map[string]any
+		elapsed time.Duration
+	}
+	done := make(chan result, 1)
+	start := time.Now()
+	next := fmt.Sprint(page["next_after"])
+	go func() {
+		_, p := e.feed(verifier, "after="+next+"&types=ApplicationStateChanged&wait=20")
+		done <- result{p, time.Since(start)}
+	}()
+	time.Sleep(300 * time.Millisecond)
+	appID, _, _ := e.newApplication(1000000, "Feed Test Co.", false)
+	res := <-done
+	events := res.page["events"].([]any)
+	if len(events) == 0 || res.elapsed > 10*time.Second {
+		t.Fatalf("long poll: %d events after %v", len(events), res.elapsed)
+	}
+	ev := events[0].(map[string]any)
+	if ev["aggregate_id"] != appID || ev["type"] != "ApplicationStateChanged" {
+		t.Fatalf("first event: %+v", ev)
+	}
+
+	// Paging in order: everything, then nothing new.
+	_, all := e.feed(verifier, "after=0&limit=3")
+	if len(all["events"].([]any)) != 3 {
+		t.Fatalf("limit: %+v", all)
+	}
+	var last float64
+	for _, x := range all["events"].([]any) {
+		seq := x.(map[string]any)["seq"].(float64)
+		if seq <= last {
+			t.Fatal("events out of order")
+		}
+		last = seq
+	}
+	_, rest := e.feed(verifier, fmt.Sprintf("after=%v&limit=500", all["next_after"]))
+	_, empty := e.feed(verifier, fmt.Sprintf("after=%v", rest["next_after"]))
+	if len(empty["events"].([]any)) != 0 {
+		t.Fatalf("expected no new events: %+v", empty)
+	}
 }

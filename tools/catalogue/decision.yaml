@@ -54,6 +54,17 @@ tools:
         reason_codes: { type: array, items: { type: string }, minItems: 1 }
         narrative: { type: string, maxLength: 8000 }
         confidence: { type: number, minimum: 0, maximum: 1 }
+        models:
+          type: array
+          description: "Models that contributed (scorecards, LLMs), recorded in the decision record. LLMs may draft the narrative; outcomes and reason codes come from policy rules."
+          items:
+            type: object
+            required: [kind, id]
+            properties:
+              kind: { type: string, enum: [scorecard, ml, llm, rules] }
+              id: { type: string }
+              version: { type: string }
+              prompt_version: { type: string }
     output: { type: object, properties: { decision_record_id: { type: string, format: uuid }, approval_request_id: { type: string, format: uuid } } }
 
   - name: decision.approve

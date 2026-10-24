@@ -271,7 +271,7 @@ func (g *Gateway) validTerms(a *appRecord, t terms) *ToolError {
 }
 
 func (g *Gateway) insertDecision(ctx context.Context, tx pgx.Tx, c *call, kind, outcome string, t *terms, conditions any,
-	reasons []string, inputs map[string]any, ev policy.Evaluation, narrative string, confidence *float64, basedOn string) (string, error) {
+	reasons []string, inputs map[string]any, ev policy.Evaluation, narrative string, confidence *float64, basedOn string, models any) (string, error) {
 	var termsJSON []byte
 	if t != nil {
 		termsJSON, _ = json.Marshal(t.asMap())
@@ -282,6 +282,10 @@ func (g *Gateway) insertDecision(ctx context.Context, tx pgx.Tx, c *call, kind, 
 	if reasons == nil {
 		reasons = []string{}
 	}
+	if models == nil {
+		models = []any{}
+	}
+	modelsJSON, _ := json.Marshal(models)
 	condJSON, _ := json.Marshal(conditions)
 	inJSON, _ := json.Marshal(inputs)
 	polJSON, _ := json.Marshal(map[string]any{"pack": g.Pack.Name, "pack_version": g.Pack.Version, "outcome": ev.Outcome, "results": ev.Results})
@@ -291,10 +295,10 @@ func (g *Gateway) insertDecision(ctx context.Context, tx pgx.Tx, c *call, kind, 
 	}
 	id := newUUID()
 	_, err := tx.Exec(ctx, `INSERT INTO decision_records (id, tenant_id, application_id, kind, outcome, terms, conditions,
-		reason_codes, inputs, policy, narrative, confidence, actor, on_behalf_of, based_on)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''),$12,$13,NULLIF($14,''),NULLIF($15,'')::uuid)`,
+		reason_codes, inputs, policy, narrative, confidence, actor, on_behalf_of, based_on, models)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NULLIF($11,''),$12,$13,NULLIF($14,''),NULLIF($15,'')::uuid,$16)`,
 		id, c.tenantID, c.app.ID, kind, outcome, termsJSON, condJSON, reasons, inJSON, polJSON, narrative, confidence,
-		c.p.ID, onBehalf, basedOn)
+		c.p.ID, onBehalf, basedOn, modelsJSON)
 	return id, err
 }
 
@@ -339,7 +343,7 @@ func (g *Gateway) decisionRecommend(ctx context.Context, tx pgx.Tx, c *call) (an
 	}
 	inputs := map[string]any{"checks": c.app.ChecksSummary, "metrics": c.app.Metrics, "proposed_by": proposedBy}
 	id, err := g.insertDecision(ctx, tx, c, "recommendation", outcome, t, stringList(c.input["conditions"]),
-		stringList(c.input["reason_codes"]), inputs, ev, str(c.input, "narrative"), confidence, "")
+		stringList(c.input["reason_codes"]), inputs, ev, str(c.input, "narrative"), confidence, "", c.input["models"])
 	if err != nil {
 		return nil, err
 	}
@@ -373,7 +377,7 @@ func (g *Gateway) decisionApprove(ctx context.Context, tx pgx.Tx, c *call) (any,
 	}
 	outcome := rec.Outcome
 	inputs := map[string]any{"note": str(c.input, "note"), "amended": c.input["amended_terms"] != nil}
-	id, err := g.insertDecision(ctx, tx, c, "decision", outcome, &t, rec.Conditions, rec.ReasonCodes, inputs, ev, "", nil, rec.ID)
+	id, err := g.insertDecision(ctx, tx, c, "decision", outcome, &t, rec.Conditions, rec.ReasonCodes, inputs, ev, "", nil, rec.ID, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +398,7 @@ func (g *Gateway) decisionDecline(ctx context.Context, tx pgx.Tx, c *call) (any,
 	reasons := stringList(c.input["reason_codes"])
 	ev := g.evaluate(c, nil)
 	id, err := g.insertDecision(ctx, tx, c, "decision", "decline", nil, nil, reasons,
-		map[string]any{"note": str(c.input, "note")}, ev, "", nil, basedOn)
+		map[string]any{"note": str(c.input, "note")}, ev, "", nil, basedOn, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -522,4 +526,71 @@ func (g *Gateway) loanHandoff(ctx context.Context, tx pgx.Tx, c *call) (any, err
 	}
 	c.addEvent("LoanHandedOff", h)
 	return map[string]any{"external_client_id": res.ExternalClientID, "external_loan_id": res.ExternalLoanID}, nil
+}
+
+// approval.list shows approval requests, with the proposal and whether the caller may decide.
+func (g *Gateway) approvalList(ctx context.Context, tx pgx.Tx, c *call) (any, error) {
+	status := str(c.input, "status")
+	if status == "" {
+		status = "pending"
+	}
+	limit, ok := num(c.input, "limit")
+	if !ok {
+		limit = 50
+	}
+	var appID *string
+	if c.app != nil {
+		appID = &c.app.ID
+	}
+	rows, err := tx.Query(ctx, `SELECT r.id::text, r.tool, r.tool_input, COALESCE(r.application_id::text, ''), COALESCE(a.reference, ''),
+		r.requested_by, COALESCE(r.on_behalf_of, ''), r.required_role, r.reason, r.status::text, r.created_at, r.expires_at,
+		COALESCE(r.decided_by, '')
+		FROM approval_requests r LEFT JOIN applications a ON a.id = r.application_id
+		WHERE r.status = $1::approval_status AND ($2::uuid IS NULL OR r.application_id = $2)
+		  AND (NULLIF($3, '') IS NULL OR r.required_role = $3)
+		ORDER BY r.created_at LIMIT $4`, status, appID, str(c.input, "required_role"), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]any{}
+	for rows.Next() {
+		var id, tool, app, ref, by, onBehalf, role, reason, st, decidedBy string
+		var input []byte
+		var created time.Time
+		var expires *time.Time
+		if err := rows.Scan(&id, &tool, &input, &app, &ref, &by, &onBehalf, &role, &reason, &st, &created, &expires, &decidedBy); err != nil {
+			return nil, err
+		}
+		item := map[string]any{"approval_request_id": id, "tool": tool, "proposal": jsonMap(input), "requested_by": by,
+			"required_role": role, "reason": reason, "status": st, "created_at": created.UTC().Format(time.RFC3339)}
+		if app != "" {
+			item["application_id"], item["application_reference"] = app, ref
+		}
+		if onBehalf != "" {
+			item["on_behalf_of"] = onBehalf
+		}
+		if expires != nil {
+			item["expires_at"] = expires.UTC().Format(time.RFC3339)
+		}
+		if decidedBy != "" {
+			item["decided_by"] = decidedBy
+		}
+		if st == "pending" {
+			// The approved call runs as the responder, so the responder needs the required role.
+			item["you_can_decide"] = c.p.ID != by && c.p.ID != onBehalf && hasRole(c.p.Roles, role)
+		}
+		out = append(out, item)
+	}
+	return map[string]any{"approval_requests": out}, rows.Err()
+}
+
+// hasRole reports whether roles include role, counting senior roles as their base role.
+func hasRole(roles []string, role string) bool {
+	for _, r := range roles {
+		if r == role || (role == "credit_approver" && r == "senior_credit_approver") {
+			return true
+		}
+	}
+	return false
 }

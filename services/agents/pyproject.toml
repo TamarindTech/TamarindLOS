@@ -1,0 +1,18 @@
+[project]
+name = "tamarind-agents"
+version = "0.1.0"
+description = "Agent runtime for Tamarind LOS: built-in agents that act through the tool gateway over MCP"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = []  # standard library only
+
+[project.scripts]
+tamarind-agents = "tamarind_agents.__main__:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["tamarind_agents"]

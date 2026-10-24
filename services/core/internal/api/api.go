@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /v1/tools", s.authed(s.listTools))
 	mux.HandleFunc("POST /v1/tools/{name}", s.authed(s.invokeREST))
+	mux.HandleFunc("GET /v1/events", s.authed(s.events))
 	mux.HandleFunc("POST /mcp", s.authed(s.mcp))
 	mux.HandleFunc("GET /mcp", func(w http.ResponseWriter, _ *http.Request) {
 		// No server-initiated stream in Phase 0.
@@ -100,6 +102,50 @@ func (s *Server) invokeREST(w http.ResponseWriter, r *http.Request, p *auth.Prin
 	}
 	resp := s.G.Invoke(r.Context(), p, r.PathValue("name"), body.Input, body.Envelope)
 	writeJSON(w, resp.HTTPStatus(), resp)
+}
+
+// events serves the tenant's event feed: GET /v1/events?after=0&limit=100&wait=25&types=A,B.
+// With wait (seconds, up to 30) the request blocks until an event arrives (long polling).
+func (s *Server) events(w http.ResponseWriter, r *http.Request, p *auth.Principal) {
+	q := r.URL.Query()
+	bad := func(msg string) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error",
+			"error": map[string]string{"code": gateway.ErrValidation, "message": msg}})
+	}
+	var after int64
+	var limit, wait int
+	var err error
+	if v := q.Get("after"); v != "" {
+		if after, err = strconv.ParseInt(v, 10, 64); err != nil || after < 0 {
+			bad("after must be a non-negative integer")
+			return
+		}
+	}
+	if v := q.Get("limit"); v != "" {
+		if limit, err = strconv.Atoi(v); err != nil {
+			bad("limit must be an integer")
+			return
+		}
+	}
+	if v := q.Get("wait"); v != "" {
+		if wait, err = strconv.Atoi(v); err != nil || wait < 0 {
+			bad("wait must be a non-negative number of seconds")
+			return
+		}
+	}
+	var types []string
+	for _, t := range strings.Split(q.Get("types"), ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			types = append(types, t)
+		}
+	}
+	page, te := s.G.Events(r.Context(), p, after, limit, types, time.Duration(wait)*time.Second)
+	if te != nil {
+		resp := &gateway.Response{Status: "error", Error: te}
+		writeJSON(w, resp.HTTPStatus(), resp)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 func traceID(r *http.Request) string {

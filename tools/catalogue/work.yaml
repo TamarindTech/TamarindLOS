@@ -65,3 +65,24 @@ tools:
       properties:
         status: { type: string }
         result: { type: object, description: "Result of the executed tool when approved." }
+
+  - name: approval.list
+    version: 0.1.0
+    summary: List approval requests (by default the pending ones), with the proposed call and whether the caller may decide each one.
+    risk_tier: read
+    default_autonomy: L4
+    mutates: false
+    idempotent: true
+    scopes: [approvals:read]
+    errors: [NOT_FOUND]
+    input:
+      type: object
+      properties:
+        status: { type: string, enum: [pending, approved, rejected, expired, cancelled], default: pending }
+        application_id: { type: string, format: uuid }
+        required_role: { type: string }
+        limit: { type: integer, minimum: 1, maximum: 200 }
+    output:
+      type: object
+      properties:
+        approval_requests: { type: array, items: { type: object } }

@@ -128,6 +128,10 @@ func appendEvent(ctx context.Context, tx pgx.Tx, ev Event) error {
 	if _, err := tx.Exec(ctx, `INSERT INTO outbox (event_id, tenant_id) VALUES ($1, $2)`, ev.ID, ev.TenantID); err != nil {
 		return fmt.Errorf("insert outbox: %w", err)
 	}
+	// Wakes feed subscribers when the transaction commits (no notification on rollback).
+	if _, err := tx.Exec(ctx, `SELECT pg_notify('`+notifyChannel+`', $1)`, ev.TenantID); err != nil {
+		return fmt.Errorf("notify: %w", err)
+	}
 	return nil
 }
 

@@ -12,3 +12,8 @@ deploy/compose/.env
 .idea/
 .vscode/
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.tamarind-agents/

@@ -4,7 +4,7 @@
 
 Tamarind helps lenders take a loan application from intake to an approved, signed offer, with AI agents doing the routine work and people staying in control of credit decisions.
 
-> **Status: Phase 0 (foundations).** One SME loan runs from intake to booking: borrower consent, verification checks through mock connectors, CEL policy rules, an agent-proposed recommendation, a human approval within limits, an offer the borrower accepts, and a hand-off to (mock) core banking. Everything goes through one tool gateway over REST and MCP, with Cedar authorization, agent autonomy levels and a hash-chained audit log on PostgreSQL. It is not ready for real data. See the [roadmap](#roadmap) and [open decisions](docs/adr/README.md).
+> **Status: Phase 0 (foundations).** One SME loan runs from intake to booking. Once the borrower consents, built-in agents take over: a verification agent runs the checks through mock connectors and an underwriting agent evaluates the CEL policy rules and proposes a decision. People approve it within their limits, the borrower accepts the offer, and the loan is handed to (mock) core banking. Everything goes through one tool gateway over REST and MCP, with Cedar authorization, agent autonomy levels and a hash-chained audit log on PostgreSQL. It is not ready for real data. See the [roadmap](#roadmap) and [open decisions](docs/adr/README.md).
 
 ---
 
@@ -59,7 +59,7 @@ docker compose up --build
 curl -s localhost:8080/healthz
 ```
 
-On Windows, `deploy/compose/demo.ps1` runs the whole story and checks each step. Otherwise follow the walkthrough in [services/core/README.md](services/core/README.md): agents create and verify an application, propose a decision for a human to approve, and a loan is offered, accepted and booked.
+Compose starts PostgreSQL, the core service and the agent runtime. On Windows, `deploy/compose/demo.ps1` runs the whole story and checks each step. Otherwise follow the walkthroughs in [services/core/README.md](services/core/README.md) and [services/agents/README.md](services/agents/README.md).
 
 ## Scope
 
@@ -81,7 +81,7 @@ On Windows, `deploy/compose/demo.ps1` runs the whole story and checks each step.
 | Phase | Outcome | Status |
 |---|---|---|
 | **Design** | Concept, reference architecture, core decisions, specifications | Done |
-| **0 — Foundations** | Tool gateway, domain core, state machine, audit ledger, REST + MCP adapters, mock connectors | In progress: gateway, REST + MCP, audit ledger, CI, mock connectors and the full intake-to-booking journey done; outbox relay and Python agent runtime next |
+| **0 — Foundations** | Tool gateway, domain core, state machine, audit ledger, REST + MCP adapters, mock connectors | In progress: gateway, REST + MCP, audit ledger, CI, mock connectors, the full intake-to-booking journey, event feed and the Python agent runtime (verification and underwriting agents) done; document pipeline next |
 | **1 — Assisted origination** | Officer console, document pipeline, intake and document agents, decision records | Planned |
 | **2 — Supervised automation** | Verification agent, policy packs, approval gates, evaluation harness, Fineract hand-off | Planned |
 | **3 — Ecosystem** | Borrower portal, external agent access, more connectors and jurisdiction packs | Planned |

@@ -24,6 +24,7 @@ Copy [0000-template.md](0000-template.md) to the next free number, fill it in, s
 | [0003](0003-licence.md) | Project licence: Apache-2.0 | Accepted | Christopher Tun |
 | [0004](0004-policy-engine.md) | Policy engine: Cedar + CEL | Accepted | Christopher Tun |
 | [0005](0005-mcp-server-phase-0.md) | MCP server for Phase 0: minimal built-in, official SDK in Phase 1 | Proposed | Christopher Tun |
+| [0006](0006-agent-event-delivery.md) | Agent event delivery in Phase 0: ordered feed with long polling | Proposed | Christopher Tun |
 
 ### Planned
 

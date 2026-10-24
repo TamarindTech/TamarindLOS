@@ -57,6 +57,7 @@ go run ./cmd/tamarind serve \
 | `GET /v1/tools` | Catalogue, with which tools are implemented and which the caller has scopes for |
 | `POST /v1/tools/{name}` | Invoke a tool. Body: `{"input": {...}, "idempotency_key": "...", "reason": "...", "on_behalf_of": "...", "dry_run": false, "expected_state_version": 3}` |
 | `POST /mcp` | MCP (Streamable HTTP, JSON responses): `initialize`, `ping`, `tools/list`, `tools/call` |
+| `GET /v1/events?after=0&types=…&wait=25` | The tenant's domain events in order (scope `events:read`). With `wait`, long-polls until an event commits. Used by the agent runtime ([ADR-0006](../../docs/adr/0006-agent-event-delivery.md)) |
 
 Responses always have the same shape: `status` (`ok`, `approval_required` or `error`), `result`, `approval_request_id`, `error {code, message, details}` and `invocation_id`. HTTP status codes follow the error code: 400 validation, 403 policy, 404 not found, 409 conflict, 422 precondition, 202 approval required.
 
@@ -68,7 +69,7 @@ Responses always have the same shape: `status` (`ok`, `approval_required` or `er
 | Verification | `kyc.run` (KYC for people, KYB for businesses), `sanctions.screen`, `credit.pull_report`, `bank.analyse_statements` |
 | Decision | `policy.evaluate`, `decision.recommend`, `decision.approve`, `decision.decline` |
 | Offer and booking | `offer.generate`, `offer.send`, `offer.accept`, `loan.handoff` |
-| Work | `approval.respond` |
+| Work | `approval.list` (the approval queue, with the proposal and whether you may decide), `approval.respond` |
 
 Document, task and refer tools return `NOT_IMPLEMENTED` until Phase 1.
 
@@ -92,6 +93,8 @@ Who does what in the demo tenant:
 | `agent:intake` | `dev-agent-intake` | Creates applications and adds parties (L3) |
 | `agent:verification` | `dev-agent-verification` | Runs checks (L3) |
 | `agent:underwriting` | `dev-agent-underwriting` | Evaluates policy; proposes recommendations (L2: a person must approve) |
+
+In Compose, the verification and underwriting agents run on their own in the `agents` service ([services/agents](../agents/README.md)).
 | `user:approver.ben` | `dev-approver-ben` | Approves up to 25,000; declines |
 | `user:approver.sara` | `dev-approver-sara` | Senior approver, up to 100,000 |
 | `user:ops.dana` | `dev-ops-dana` | Hands accepted loans to core banking |
@@ -146,7 +149,7 @@ TAMARIND_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres
 
 The end-to-end tests create a throwaway database and check, among other things: schema validation, CEL preconditions, the pack's party rules, optimistic concurrency, idempotent replay, agent autonomy and approval requests, maker-checker, re-authorization of approved calls, tenant isolation, MCP `tools/list` filtering, audit-chain verification, tamper detection and that the application role cannot edit events.
 
-`TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event.
+`TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event.
 
 ## Layout
 

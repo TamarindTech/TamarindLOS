@@ -215,6 +215,7 @@ func cmdServe(ctx context.Context, args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	go g.Listen(ctx) // wakes event-feed subscribers
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{G: g, Log: log}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()

@@ -12,7 +12,7 @@ Specifications turn the [reference architecture](../architecture/02-reference-ar
 
 All machine-readable sources are validated on every push and pull request by [CI](../../.github/workflows/ci.yml), using the same engines the service runs (cel-go, cedar-go, PostgreSQL 16):
 
-- 31 tool definitions validate against [tool-definition.schema.json](../../tools/schema/tool-definition.schema.json), with no duplicate names.
+- 32 tool definitions validate against [tool-definition.schema.json](../../tools/schema/tool-definition.schema.json), with no duplicate names.
 - The migrations apply cleanly on PostgreSQL 16. Tested guardrails: tenant isolation (row-level security), append-only decision records, human-only final decisions, maker-checker on approvals, and a mandatory reason for agent invocations.
 - All CEL rules, state-machine guards and tool preconditions compile, and the four rule test cases pass.
 - The Cedar policies parse and pass 18 authorization scenarios.

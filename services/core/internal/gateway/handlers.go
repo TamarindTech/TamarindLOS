@@ -40,6 +40,7 @@ func (g *Gateway) registerHandlers() map[string]handler {
 		"offer.send":               g.offerSend,
 		"offer.accept":             g.offerAccept,
 		"loan.handoff":             g.loanHandoff,
+		"approval.list":            g.approvalList,
 	}
 }
 

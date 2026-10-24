@@ -72,6 +72,7 @@ var indexTemplate = template.Must(template.New("index").Parse(`<!doctype html>
     <tr><td><code>GET /v1/tools</code></td><td>Tool catalogue, with what is implemented and what the caller may use</td><td>Yes</td></tr>
     <tr><td><code>POST /v1/tools/{name}</code></td><td>Invoke a tool (REST)</td><td>Yes</td></tr>
     <tr><td><code>POST /mcp</code></td><td>MCP endpoint for AI agents (Streamable HTTP, JSON responses)</td><td>Yes</td></tr>
+    <tr><td><code>GET /v1/events?after=0&amp;wait=25</code></td><td>Ordered event feed with long polling; the built-in agents wake on it</td><td>Yes (<code>events:read</code>)</td></tr>
   </table></div>
 
   <h2>Implemented tools ({{len .Tools}} of {{.ToolsTotal}})</h2>

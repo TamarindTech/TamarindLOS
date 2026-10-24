@@ -37,6 +37,7 @@ type Gateway struct {
 	Connectors connectors.Set
 
 	tenantIDs map[string]string // slug -> uuid
+	feed      hub
 	handlers  map[string]handler
 }
 
