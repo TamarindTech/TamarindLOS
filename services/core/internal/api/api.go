@@ -26,6 +26,7 @@ type Server struct {
 // Handler returns the HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /v1/tools", s.authed(s.listTools))
 	mux.HandleFunc("POST /v1/tools/{name}", s.authed(s.invokeREST))

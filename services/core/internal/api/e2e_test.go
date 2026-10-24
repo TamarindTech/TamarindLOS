@@ -409,6 +409,28 @@ func TestAuditChainDetectsTampering(t *testing.T) {
 	}
 }
 
+func TestStartPage(t *testing.T) {
+	e := setup(t)
+	res, err := http.Get(e.srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK || !strings.Contains(string(body), "Tamarind LOS") ||
+		!strings.Contains(string(body), "application_create") || !strings.Contains(string(body), "dev-agent-intake") {
+		t.Errorf("start page: status %d", res.StatusCode)
+	}
+	res2, err := http.Get(e.srv.URL + "/nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res2.Body.Close()
+	if res2.StatusCode != http.StatusNotFound {
+		t.Errorf("unknown path should be 404, got %d", res2.StatusCode)
+	}
+}
+
 func TestUnauthenticated(t *testing.T) {
 	e := setup(t)
 	res, err := http.Post(e.srv.URL+"/v1/tools/application.get", "application/json", strings.NewReader(`{}`))
