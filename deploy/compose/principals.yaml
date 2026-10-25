@@ -51,7 +51,7 @@ principals:
     tenant: demo
     roles: [agent_intake]
     trust_level: L3
-    scopes: [applications:read, applications:write, parties:write, documents:request, tasks:write, events:read]
+    scopes: [applications:read, applications:write, parties:write, documents:request, tasks:write, events:read, agents:run]
     token: dev-agent-intake
 
   - id: agent:underwriting
@@ -59,7 +59,7 @@ principals:
     tenant: demo
     roles: [agent_underwriting]
     trust_level: L3
-    scopes: [applications:read, policy:evaluate, decisions:recommend, events:read]
+    scopes: [applications:read, policy:evaluate, decisions:recommend, events:read, agents:run, tasks:write]
     token: dev-agent-underwriting
 
   - id: agent:documents
@@ -67,7 +67,7 @@ principals:
     tenant: demo
     roles: [agent_documents]
     trust_level: L3
-    scopes: [applications:read, documents:process, events:read]
+    scopes: [applications:read, documents:process, events:read, agents:run, tasks:write]
     token: dev-agent-documents
 
   - id: agent:verification
@@ -75,7 +75,7 @@ principals:
     tenant: demo
     roles: [agent_verification]
     trust_level: L3
-    scopes: [applications:read, checks:run, policy:evaluate, events:read]
+    scopes: [applications:read, checks:run, policy:evaluate, events:read, agents:run, tasks:write]
     token: dev-agent-verification
 
   # Borrowers (portal users). A borrower acts only on applications linked to them.

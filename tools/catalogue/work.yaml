@@ -1,22 +1,23 @@
 catalogue: work
-description: Tasks and approval requests shared by humans and agents.
+description: Tasks, approval requests and agent runs shared by people and agents.
 tools:
   - name: task.create
     version: 0.1.0
     summary: Create a task for a person, role or agent, typically an exception or review.
+    description: Agents escalate by creating a task for a role (assignee role:<name>). A task created inside an agent run is linked to that run.
     risk_tier: low
     default_autonomy: L3
     mutates: true
     idempotent: true
     scopes: [tasks:write]
     emits: [TaskCreated]
-    errors: [VALIDATION_FAILED]
+    errors: [VALIDATION_FAILED, NOT_FOUND]
     input:
       type: object
       required: [kind, title, assignee]
       properties:
         application_id: { type: string, format: uuid }
-        kind: { type: string, enum: [review_evidence, resolve_exception, collect_document, contact_party, other] }
+        kind: { type: string, enum: [review_evidence, review_document, review_check, resolve_exception, collect_document, contact_party, other] }
         title: { type: string, maxLength: 200 }
         details: { type: object }
         assignee: { type: string, description: "Principal id (user:..., agent:...) or role (role:...)." }
@@ -26,13 +27,14 @@ tools:
   - name: task.complete
     version: 0.1.0
     summary: Complete or cancel a task with an outcome.
+    description: Only the assignee (directly or through the assigned role) or the task's creator may complete it.
     risk_tier: low
     default_autonomy: L3
     mutates: true
     idempotent: true
     scopes: [tasks:write]
     emits: [TaskCompleted]
-    errors: [NOT_FOUND, STATE_CONFLICT]
+    errors: [NOT_FOUND, STATE_CONFLICT, POLICY_DENIED]
     input:
       type: object
       required: [task_id, status]
@@ -41,6 +43,28 @@ tools:
         status: { type: string, enum: [done, cancelled] }
         outcome: { type: object }
     output: { type: object, properties: { status: { type: string } } }
+
+  - name: task.list
+    version: 0.1.0
+    summary: List tasks. By default, open tasks assigned to you or to one of your roles.
+    risk_tier: read
+    default_autonomy: L4
+    mutates: false
+    idempotent: true
+    scopes: [tasks:read]
+    errors: [NOT_FOUND, VALIDATION_FAILED]
+    input:
+      type: object
+      properties:
+        application_id: { type: string, format: uuid }
+        assignee: { type: string, description: "mine (default), any, a principal id or role:<name>. any requires application_id unless you are staff." }
+        status: { type: string, enum: [active, open, in_progress, done, cancelled, all], default: active }
+        kind: { type: string }
+        limit: { type: integer, minimum: 1, maximum: 200 }
+    output:
+      type: object
+      properties:
+        tasks: { type: array, items: { type: object } }
 
   - name: approval.respond
     version: 0.1.0
@@ -86,3 +110,69 @@ tools:
       type: object
       properties:
         approval_requests: { type: array, items: { type: object } }
+
+  - name: agent.run_start
+    version: 0.1.0
+    summary: Open a run for the calling agent. Pass the returned run_id in the envelope of every call the run makes.
+    description: At most one run per agent per application is active. A run left open for more than 10 minutes is closed as failed when the next one starts.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [agents:run]
+    emits: [AgentRunStarted]
+    errors: [STATE_CONFLICT, POLICY_DENIED, VALIDATION_FAILED]
+    input:
+      type: object
+      required: [agent_version]
+      properties:
+        application_id: { type: string, format: uuid }
+        agent_version: { type: string, maxLength: 50 }
+        trigger_event_id: { type: string, format: uuid }
+        trigger_event_type: { type: string, maxLength: 100 }
+    output: { type: object, properties: { run_id: { type: string, format: uuid } } }
+
+  - name: agent.run_finish
+    version: 0.1.0
+    summary: Close the calling agent's run with its outcome, usage and, when it escalated, the task it created.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [agents:run]
+    emits: [AgentRunFinished]
+    errors: [NOT_FOUND, STATE_CONFLICT, POLICY_DENIED]
+    input:
+      type: object
+      required: [run_id, status]
+      properties:
+        run_id: { type: string, format: uuid }
+        status: { type: string, enum: [succeeded, escalated, failed, cancelled] }
+        summary: { type: string, maxLength: 1000 }
+        escalation_task_id: { type: string, format: uuid }
+        tokens_in: { type: integer, minimum: 0 }
+        tokens_out: { type: integer, minimum: 0 }
+        cost_micro_usd: { type: integer, minimum: 0 }
+    output: { type: object, properties: { status: { type: string }, steps: { type: integer } } }
+
+  - name: agent.run_list
+    version: 0.1.0
+    summary: List agent runs, newest first. With run_id, also returns every tool call the run made.
+    risk_tier: read
+    default_autonomy: L4
+    mutates: false
+    idempotent: true
+    scopes: [agent_runs:read]
+    errors: [NOT_FOUND]
+    input:
+      type: object
+      properties:
+        application_id: { type: string, format: uuid }
+        run_id: { type: string, format: uuid }
+        agent: { type: string }
+        status: { type: string, enum: [running, succeeded, escalated, failed, cancelled] }
+        limit: { type: integer, minimum: 1, maximum: 200 }
+    output:
+      type: object
+      properties:
+        runs: { type: array, items: { type: object } }

@@ -189,6 +189,7 @@ func withEnvelope(input map[string]any, mutates bool) map[string]any {
 			"expected_state_version": map[string]any{"type": "integer", "description": "Fail with STATE_CONFLICT if the application changed."},
 			"dry_run":                map[string]any{"type": "boolean", "description": "Check permissions and preconditions without executing."},
 			"on_behalf_of":           map[string]any{"type": "string", "description": "Principal you act for, e.g. user:officer.ana."},
+			"run_id":                 map[string]any{"type": "string", "description": "Agents: the run (agent_run_start) this call belongs to."},
 		},
 	}
 	return schema

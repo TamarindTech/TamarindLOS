@@ -55,7 +55,7 @@ go run ./cmd/tamarind serve \
 |---|---|
 | `GET /healthz` | Liveness and database check |
 | `GET /v1/tools` | Catalogue, with which tools are implemented and which the caller has scopes for |
-| `POST /v1/tools/{name}` | Invoke a tool. Body: `{"input": {...}, "idempotency_key": "...", "reason": "...", "on_behalf_of": "...", "dry_run": false, "expected_state_version": 3}` |
+| `POST /v1/tools/{name}` | Invoke a tool. Body: `{"input": {...}, "idempotency_key": "...", "reason": "...", "on_behalf_of": "...", "dry_run": false, "expected_state_version": 3, "run_id": "..."}` |
 | `POST /mcp` | MCP (Streamable HTTP, JSON responses): `initialize`, `ping`, `tools/list`, `tools/call` |
 | `PUT /v1/uploads/{token}` | Upload a file to a link from `document.upload_url`. The link is the credential (single use, 15 minutes); the file is hashed, its type checked against the declared MIME type and scanned for malware |
 | `GET /v1/events?after=0&types=…&wait=25` | The tenant's domain events in order (scope `events:read`). With `wait`, long-polls until an event commits. Used by the agent runtime ([ADR-0006](../../docs/adr/0006-agent-event-delivery.md)) |
@@ -71,9 +71,10 @@ Responses always have the same shape: `status` (`ok`, `approval_required` or `er
 | Verification | `kyc.run` (KYC for people, KYB for businesses), `sanctions.screen`, `credit.pull_report`, `bank.analyse_statements` |
 | Decision | `policy.evaluate`, `decision.recommend`, `decision.approve`, `decision.decline` |
 | Offer and booking | `offer.generate`, `offer.send`, `offer.accept`, `loan.handoff` |
-| Work | `approval.list` (the approval queue, with the proposal and whether you may decide), `approval.respond` |
+| Work | `task.list`, `task.create`, `task.complete` (the shared work queue), `approval.list` (the approval queue, with the proposal and whether you may decide), `approval.respond` |
+| Agents | `agent.run_start`, `agent.run_finish`, `agent.run_list` (what each agent did, call by call) |
 
-Task and refer tools return `NOT_IMPLEMENTED` until Phase 1.
+`application.update`, `party.update` and `decision.refer` return `NOT_IMPLEMENTED` for now.
 
 ### Documents and evidence
 
@@ -89,6 +90,12 @@ legal_name: Mekong Trading Co.
 ```
 
 A value ending in `?` is read with low confidence. A file containing the EICAR test string is rejected as malware. Files are stored on disk (`TAMARIND_BLOB_DIR`) behind a blob-store port meant for S3-compatible storage.
+
+### Tasks and agent runs
+
+People and agents share one work queue. A task is assigned to a principal or a role (`role:loan_officer`); `task.list` shows by default the open tasks assigned to you or to one of your roles, and only the assignee or the creator may complete one. Agents escalate by creating a task. `document.request` creates a task for the borrower (or the loan officers when there is no borrower login), keeps one open request per document and party, and the request closes itself when a document of that type is classified.
+
+Every time an agent acts it opens a run (`agent.run_start`) and passes the run id in the envelope of each call (`run_id`), so `agent.run_list` with a `run_id` returns the run's tool calls in order, each with its reason, autonomy and outcome. The run records what woke the agent, how it ended (`succeeded`, `escalated`, `failed`, `cancelled`), its step count, token usage and cost when reported, and the task it handed to a person. Only the agent that opened a run can use or close it, an agent has at most one open run per application, and a run left open for more than 10 minutes (the agent crashed) is closed as failed when the next one starts. Run events are recorded on the run, so they do not change the application's `state_version`.
 
 ### The journey
 
@@ -107,15 +114,15 @@ Who does what in the demo tenant:
 |---|---|---|
 | `user:officer.ana`, `user:officer.chai` | `dev-officer-ana`, `dev-officer-chai` | Create applications, review agent proposals, generate and send offers |
 | `borrower:mekong` | `dev-borrower-mekong` | Sees only applications linked to it; records consent, accepts offers |
-| `agent:intake` | `dev-agent-intake` | Creates applications and adds parties (L3) |
+| `agent:intake` | `dev-agent-intake` | Creates applications and adds parties; asks for missing documents (L3) |
 | `agent:documents` | `dev-agent-documents` | Classifies and extracts uploads; verifies confident evidence that matches the application (L3) |
 | `agent:verification` | `dev-agent-verification` | Runs checks (L3) |
 | `agent:underwriting` | `dev-agent-underwriting` | Evaluates policy; proposes recommendations (L2: a person must approve) |
-
-In Compose, the verification and underwriting agents run on their own in the `agents` service ([services/agents](../agents/README.md)).
 | `user:approver.ben` | `dev-approver-ben` | Approves up to 25,000; declines |
 | `user:approver.sara` | `dev-approver-sara` | Senior approver, up to 100,000 |
 | `user:ops.dana` | `dev-ops-dana` | Hands accepted loans to core banking |
+
+In Compose, the intake, document, verification and underwriting agents run on their own in the `agents` service ([services/agents](../agents/README.md)).
 
 ### Mock connectors
 
@@ -167,7 +174,7 @@ TAMARIND_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres
 
 The end-to-end tests create a throwaway database and check, among other things: schema validation, CEL preconditions, the pack's party rules, optimistic concurrency, idempotent replay, agent autonomy and approval requests, maker-checker, re-authorization of approved calls, tenant isolation, MCP `tools/list` filtering, audit-chain verification, tamper detection and that the application role cannot edit events.
 
-`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event.
+`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event. `TestTasksAndAgentRuns` covers runs (one open per agent and application, calls linked to the run, no borrowing another agent's run, closed runs refuse changes, stale runs), escalation tasks, who may list and complete tasks, and document requests that close when the document is classified.
 
 ## Layout
 
@@ -190,4 +197,5 @@ migrations/           SQL migrations (embedded in the binary)
 - Classification and extraction are mocks; bank-statement months and financial-statement years are not yet checked against the pack minimums.
 - Connectors are mocks. Real adapters plug into the same ports.
 - Pricing uses the pack's reference rate; risk grading is not implemented yet.
-- No outbox relay or agent runtime yet; events are written but not delivered.
+- No outbox relay yet: agents read events from the feed, but there are no outbound webhooks.
+- Task due dates are recorded but nothing chases overdue tasks yet.

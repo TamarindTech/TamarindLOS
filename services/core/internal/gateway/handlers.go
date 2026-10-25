@@ -47,6 +47,12 @@ func (g *Gateway) registerHandlers() map[string]handler {
 		"document.extract":         g.documentExtract,
 		"document.request":         g.documentRequest,
 		"evidence.verify":          g.evidenceVerify,
+		"task.create":              g.taskCreate,
+		"task.complete":            g.taskComplete,
+		"task.list":                g.taskList,
+		"agent.run_start":          g.agentRunStart,
+		"agent.run_finish":         g.agentRunFinish,
+		"agent.run_list":           g.agentRunList,
 	}
 }
 

@@ -9,8 +9,9 @@
 // twice (once for the agent, once for the user) and allows it only if BOTH are permitted.
 //
 // Action groups (supplied as action entity parents):
-//   "read"      application.get, application.next_actions, policy.evaluate
-//   "intake"    application.create/update/submit, party.add/update, document.*, task.*
+//   "read"      application.get, application.next_actions, policy.evaluate, approval.list,
+//               task.list, agent.run_list
+//   "intake"    application.create/update/submit, party.add/update, document.*, task.create/complete
 //   "verify"    kyc.run, sanctions.screen, credit.pull_report, bank.analyse_statements, evidence.verify
 //   "recommend" decision.recommend, decision.refer
 //   "offer"     offer.generate, offer.send
@@ -84,6 +85,17 @@ permit (
   resource
 );
 
+// Every member of staff works the shared task queue.
+permit (
+  principal,
+  action in [Tamarind::Action::"task.create", Tamarind::Action::"task.complete"],
+  resource
+)
+when {
+  principal in Tamarind::Role::"credit_approver" ||
+  principal in Tamarind::Role::"operations"
+};
+
 // Staff may respond to approval requests. When a request is approved, the gated tool
 // runs as the responder and is authorized again for them, so a responder can only
 // approve actions they are themselves allowed to take.
@@ -99,6 +111,18 @@ when {
 };
 
 // --- Agents -------------------------------------------------------------------
+
+// Every agent records its runs and escalates to people by creating tasks. Which
+// application it may touch is still limited by the tenant guardrail above.
+permit (
+  principal is Tamarind::Agent,
+  action in [
+    Tamarind::Action::"agent.run_start",
+    Tamarind::Action::"agent.run_finish",
+    Tamarind::Action::"task.create"
+  ],
+  resource
+);
 
 permit (
   principal in Tamarind::Role::"agent_intake",

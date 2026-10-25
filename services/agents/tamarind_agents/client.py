@@ -57,6 +57,8 @@ class TamarindClient:
         self.timeout = timeout
         self._ids = itertools.count(1)
         self._initialized = False
+        # Set by the runtime while an agent run is open: every call is linked to it.
+        self.run_id: str | None = None
 
     # --- transport -----------------------------------------------------------
 
@@ -110,6 +112,8 @@ class TamarindClient:
             envelope["idempotency_key"] = key
         if on_behalf_of:
             envelope["on_behalf_of"] = on_behalf_of
+        if self.run_id:
+            envelope["run_id"] = self.run_id
         result = self._rpc("tools/call", {"name": tool.replace(".", "_"), "arguments": {**args, "_envelope": envelope}})
         structured = result.get("structuredContent")
         if not isinstance(structured, dict):

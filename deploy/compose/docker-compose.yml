@@ -67,6 +67,7 @@ services:
     command: ["run"]
     environment:
       TAMARIND_URL: http://core:8080
+      TAMARIND_INTAKE_TOKEN: dev-agent-intake
       TAMARIND_DOCUMENTS_TOKEN: dev-agent-documents
       TAMARIND_VERIFICATION_TOKEN: dev-agent-verification
       TAMARIND_UNDERWRITING_TOKEN: dev-agent-underwriting

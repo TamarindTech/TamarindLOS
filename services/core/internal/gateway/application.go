@@ -50,8 +50,10 @@ type appRecord struct {
 	Metrics          map[string]any
 	MissingConsents  []string
 	MissingDocuments []string
-	Business         map[string]any
-	Directors        []any
+	// MissingDocumentItems is MissingDocuments in a form agents can act on.
+	MissingDocumentItems []map[string]any
+	Business             map[string]any
+	Directors            []any
 }
 
 type partyRecord struct {
@@ -505,7 +507,7 @@ func (g *Gateway) summarize(a *appRecord) {
 			}
 		}
 	}
-	a.MissingDocuments = nil
+	a.MissingDocuments, a.MissingDocumentItems = nil, nil
 	for _, req := range g.requiredDocuments(a) {
 		for _, p := range a.Parties {
 			if !req.AppliesTo(p.Role) {
@@ -516,6 +518,8 @@ func (g *Gateway) summarize(a *appRecord) {
 				satisfied++
 			} else {
 				a.MissingDocuments = append(a.MissingDocuments, fmt.Sprintf("%s for %s (%s)", req.Type, p.LegalName, p.Role))
+				a.MissingDocumentItems = append(a.MissingDocumentItems, map[string]any{"document_type": req.Type,
+					"party_id": p.PartyID, "party_role": p.Role})
 			}
 		}
 	}
@@ -698,6 +702,7 @@ func (a *appRecord) view() map[string]any {
 		"completeness_pct":       a.CompletenessPct,
 		"missing_consents":       nonNil(a.MissingConsents),
 		"missing_documents":      nonNil(a.MissingDocuments),
+		"missing_document_items": nonNilSlice(a.MissingDocumentItems),
 		"documents":              nonNilSlice(a.Documents),
 		"evidence":               nonNilSlice(a.Evidence),
 		"created_by":             a.CreatedBy,
@@ -773,6 +778,10 @@ func (g *Gateway) applicationIDFor(ctx context.Context, tx pgx.Tx, c *call) (str
 		return lookup("documents", "document_id")
 	case c.input["evidence_id"] != nil:
 		return lookup("evidence", "evidence_id")
+	case c.input["task_id"] != nil:
+		return lookup("tasks", "task_id")
+	case c.input["run_id"] != nil:
+		return lookup("agent_runs", "run_id")
 	}
 	return "", nil
 }

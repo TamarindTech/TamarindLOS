@@ -2,9 +2,10 @@
 
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
-from tamarind_agents.agents import DocumentAgent, UnderwritingAgent, VerificationAgent
+from tamarind_agents.agents import DocumentAgent, IntakeAgent, UnderwritingAgent, VerificationAgent
 from tamarind_agents.client import ToolResult
 from tamarind_agents.narrative import AnthropicNarrator, TemplateNarrator, narrator_from_env
 from tamarind_agents.runtime import Cursor, Worker
@@ -43,9 +44,20 @@ class FakeClient:
         self.app, self.policy, self.recommend_status = app, policy, recommend_status
         self.calls: list[tuple[str, dict, str, str | None]] = []
         self.feed: list[dict] = []
+        self.run_id: str | None = None
+        self.runs: list[tuple[str, str | None]] = []  # (tool, run id in the envelope)
 
     def call(self, tool, args, *, reason, key=None, on_behalf_of=None):
         self.calls.append((tool, args, reason, key))
+        self.runs.append((tool, self.run_id))
+        if tool == "agent.run_start":
+            return ToolResult("ok", {"run_id": "run-1"})
+        if tool == "agent.run_finish":
+            return ToolResult("ok", {"run_id": args["run_id"], "status": args["status"]})
+        if tool == "task.create":
+            return ToolResult("ok", {"task_id": "task-1"})
+        if tool == "document.request":
+            return ToolResult("ok", {"task_id": "req-" + args["document_type"], "notified_via": "portal"})
         if tool == "application.get":
             return ToolResult("ok", {"application": self.app})
         if tool == "policy.evaluate":
@@ -105,9 +117,11 @@ class DocClient(FakeClient):
     def call(self, tool, args, *, reason, key=None, on_behalf_of=None):
         if tool == "document.classify":
             self.calls.append((tool, args, reason, key))
+            self.runs.append((tool, self.run_id))
             return ToolResult("ok", {"document_type": self.doc_type, "confidence": self.confidence})
         if tool == "document.extract":
             self.calls.append((tool, args, reason, key))
+            self.runs.append((tool, self.run_id))
             return ToolResult("ok", {"evidence": self.evidence, "low_confidence_fields": self.low})
         return super().call(tool, args, reason=reason, key=key)
 
@@ -136,6 +150,10 @@ class DocumentTests(unittest.TestCase):
         out = DocumentAgent().handle(attached(), c)
         self.assertEqual(self.verdicts(c), {"e1": "verified", "e2": "verified", "e3": "needs_review", "e4": "needs_review"})
         self.assertIn("2 for a person", out.detail)
+        # The fields a person must look at become one review task.
+        self.assertEqual(out.action, "escalated")
+        self.assertEqual(out.task["kind"], "review_evidence")
+        self.assertEqual([e["evidence_id"] for e in out.task["details"]["evidence"]], ["e3", "e4"])
 
     def test_identity_document_checked_against_the_director(self):
         c = DocClient(self.app(), doc_type="identity_document", evidence=[
@@ -148,7 +166,39 @@ class DocumentTests(unittest.TestCase):
         c = DocClient(self.app(), doc_type="other", confidence=0.3)
         out = DocumentAgent().handle(attached(), c)
         self.assertEqual(out.action, "escalated")
+        self.assertEqual(out.task["kind"], "review_document")
         self.assertEqual([t for t, *_ in c.calls], ["document.classify"])
+
+    def test_all_fields_verified_is_not_an_escalation(self):
+        c = DocClient(self.app(), evidence=[
+            {"evidence_id": "e1", "field": "registration_number", "value": "0105561234567", "confidence": 0.95}])
+        out = DocumentAgent().handle(attached(), c)
+        self.assertEqual((out.action, out.task), ("acted", None))
+
+
+class IntakeTests(unittest.TestCase):
+    def test_requests_each_missing_document_once(self):
+        app = application("intake", missing_document_items=[
+            {"document_type": "bank_statements", "party_id": BIZ, "party_role": "applicant"},
+            {"document_type": "identity_document", "party_id": DIR, "party_role": "director"}])
+        c = FakeClient(app)
+        out = IntakeAgent().handle(event("intake"), c)
+        reqs = [(a["party_id"], a["document_type"], k) for t, a, _, k in c.calls if t == "document.request"]
+        self.assertEqual(reqs, [(BIZ, "bank_statements", f"intake:evt-7:request:{BIZ}:bank_statements"),
+                                (DIR, "identity_document", f"intake:evt-7:request:{DIR}:identity_document")])
+        self.assertEqual(out.detail, "requested 2 document(s)")
+
+    def test_uploaded_but_unclassified_documents_are_not_requested(self):
+        app = application("intake", missing_document_items=[
+            {"document_type": "bank_statements", "party_id": BIZ, "party_role": "applicant"}],
+            documents=[{"document_id": "d1", "party_id": BIZ, "declared_type": "bank_statements", "status": "received"}])
+        out = IntakeAgent().handle(event("intake"), FakeClient(app))
+        self.assertEqual(out.action, "skipped")
+
+    def test_nothing_missing_or_moved_on(self):
+        self.assertEqual(IntakeAgent().handle(event("intake"), FakeClient(application("intake"))).action, "skipped")
+        self.assertEqual(IntakeAgent().handle(event("intake"), FakeClient(application("verification"))).action, "skipped")
+        self.assertFalse(IntakeAgent().wants(event("verification")))
 
 
 class UnderwritingTests(unittest.TestCase):
@@ -207,6 +257,69 @@ class NarrativeTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.TestCase):
+    def worker(self, app, d):
+        c = FakeClient(app)
+        return c, Worker(VerificationAgent(), c, Path(d))
+
+    def test_each_event_is_one_run_and_every_call_carries_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            c, w = self.worker(application("verification"), d)
+            w.process(event("verification"))
+            start, *work, finish = c.runs
+            self.assertEqual(start, ("agent.run_start", None))
+            self.assertTrue(work and all(run == "run-1" for _, run in work))
+            self.assertEqual(finish, ("agent.run_finish", None))
+            args = c.calls[-1][1]
+            self.assertEqual((args["run_id"], args["status"]), ("run-1", "succeeded"))
+            start_args = c.calls[0][1]
+            self.assertEqual(start_args["trigger_event_id"], "evt-7")
+            self.assertEqual(start_args["application_id"], APP)
+            self.assertIsNone(c.run_id)
+
+    def test_escalation_creates_a_task_and_the_run_records_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = FakeClient(application("verification"))
+            # A KYC check that needs review.
+            orig = c.call
+
+            def call(tool, args, **kw):
+                r = orig(tool, args, **kw)
+                if tool == "kyc.run" and args["party_id"] == DIR:
+                    return ToolResult("ok", {"status": "needs_review"})
+                return r
+            c.call = call
+            Worker(VerificationAgent(), c, Path(d)).process(event("verification"))
+            task = next(a for t, a, *_ in c.calls if t == "task.create")
+            self.assertEqual((task["kind"], task["assignee"], task["application_id"]), ("review_check", "role:loan_officer", APP))
+            self.assertEqual(task["details"]["agent"], "agent:verification")
+            finish = c.calls[-1][1]
+            self.assertEqual((finish["status"], finish["escalation_task_id"]), ("escalated", "task-1"))
+
+    def test_gateway_outage_leaves_the_run_open_for_the_retry(self):
+        from tamarind_agents import runtime
+        from tamarind_agents.client import GatewayError
+        with tempfile.TemporaryDirectory() as d:
+            c = FakeClient(application("verification"))
+            orig = c.call
+
+            def call(tool, args, **kw):
+                if tool == "kyc.run":
+                    raise GatewayError("connection refused")
+                return orig(tool, args, **kw)
+            c.call = call
+            w = Worker(VerificationAgent(), c, Path(d))
+            with unittest.mock.patch.object(runtime.time, "sleep"):
+                with self.assertRaises(GatewayError):
+                    w.process(event("verification"))
+            self.assertNotIn("agent.run_finish", [t for t, *_ in c.calls])
+            self.assertIsNone(c.run_id)
+
+    def test_skipped_event_closes_the_run_as_cancelled(self):
+        with tempfile.TemporaryDirectory() as d:
+            c, w = self.worker(application("underwriting"), d)
+            w.process(event("verification"))
+            self.assertEqual(c.calls[-1][1]["status"], "cancelled")
+
     def test_cursor_persists_and_events_are_processed_once(self):
         with tempfile.TemporaryDirectory() as d:
             c = FakeClient(application("verification"))

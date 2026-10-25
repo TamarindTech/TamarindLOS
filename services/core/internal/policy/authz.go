@@ -14,6 +14,8 @@ var actionGroups = map[string]string{
 	"application.next_actions": "read",
 	"policy.evaluate":          "read",
 	"approval.list":            "read",
+	"task.list":                "read",
+	"agent.run_list":           "read",
 
 	"application.create":   "intake",
 	"application.update":   "intake",
@@ -47,6 +49,7 @@ var actionGroups = map[string]string{
 var ungroupedActions = map[string]bool{
 	"decision.approve": true, "decision.decline": true, "offer.accept": true,
 	"loan.handoff": true, "approval.respond": true,
+	"agent.run_start": true, "agent.run_finish": true,
 }
 
 // roleParents lets a role inherit another role's permissions.

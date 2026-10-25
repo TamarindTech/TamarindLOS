@@ -1,7 +1,8 @@
-"""Command line: python -m tamarind_agents [run|once] [--agents documents,verification,underwriting]
+"""Command line: python -m tamarind_agents [run|once] [--agents intake,documents,verification,underwriting]
 
 Configuration (environment):
   TAMARIND_URL                  gateway base URL (default http://localhost:8080)
+  TAMARIND_INTAKE_TOKEN         bearer token for agent:intake (default: development token)
   TAMARIND_DOCUMENTS_TOKEN      bearer token for agent:documents (default: development token)
   TAMARIND_VERIFICATION_TOKEN   bearer token for agent:verification (default: development token)
   TAMARIND_UNDERWRITING_TOKEN   bearer token for agent:underwriting (default: development token)
@@ -22,7 +23,7 @@ from .client import GatewayError, TamarindClient
 from .narrative import narrator_from_env
 from .runtime import Worker, run_forever
 
-DEV_TOKENS = {"documents": "dev-agent-documents", "verification": "dev-agent-verification",
+DEV_TOKENS = {"intake": "dev-agent-intake", "documents": "dev-agent-documents", "verification": "dev-agent-verification",
               "underwriting": "dev-agent-underwriting"}
 
 
@@ -30,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="tamarind_agents", description="Run Tamarind's built-in agents.")
     ap.add_argument("command", nargs="?", default="run", choices=["run", "once"],
                     help="run: follow the event feed; once: process what is there now and exit")
-    ap.add_argument("--agents", default="documents,verification,underwriting", help="comma-separated agent names")
+    ap.add_argument("--agents", default="intake,documents,verification,underwriting", help="comma-separated agent names")
     ap.add_argument("--url", default=os.environ.get("TAMARIND_URL", "http://localhost:8080"))
     ap.add_argument("--state", default=os.environ.get("TAMARIND_AGENTS_STATE", ".tamarind-agents"))
     args = ap.parse_args(argv)

@@ -244,6 +244,20 @@ Write-Host ("  [ok]   {0,-58} -> {1}" -f "the underwriting agent proposed a deci
 Write-Host ("         DSCR {0}; reason codes {1}" -f $app.metrics.dscr, ($proposal.proposal.reason_codes -join ", ")) -ForegroundColor DarkGray
 ($proposal.proposal.narrative -split "`n") | Select-Object -First 3 | ForEach-Object { Write-Host ("         | {0}" -f $_) -ForegroundColor DarkGray }
 
+# Each of those agent actions is a recorded run, with every tool call it made.
+$runs = @((Invoke-Tool $Tokens.Ana "agent.run_list" @{ application_id = $loanId }).result.runs)
+if ($runs.Count -gt 0 -and -not ($runs | Where-Object { $_.status -eq "failed" })) {
+    $script:Passed++
+    Write-Host ("  [ok]   {0,-58} -> {1} runs" -f "every agent action is a recorded run", $runs.Count) -ForegroundColor Green
+} else {
+    $script:Failed++
+    Write-Host ("  [FAIL] agent runs: {0}" -f (($runs | ForEach-Object { "$($_.agent) $($_.status)" }) -join ", ")) -ForegroundColor Red
+}
+[array]::Reverse($runs)
+foreach ($run in $runs) {
+    Write-Host ("         {0,-20} {1,-10} {2,2} steps  {3}" -f $run.agent, $run.status, $run.steps, $run.summary) -ForegroundColor DarkGray
+}
+
 $r = Invoke-Tool $Tokens.Chai "approval.respond" @{ approval_request_id = $proposal.approval_request_id; decision = "approve"; note = "memo reviewed" }
 Check "Chai reviews the memo and records the recommendation" $r "ok"
 $recId = $r.result.result.decision_record_id

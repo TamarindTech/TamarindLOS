@@ -80,6 +80,8 @@ type call struct {
 	stateFrom string
 	// proposedBy is set when a human executes a call an agent proposed (approval.respond).
 	proposedBy string
+	// runOK is set once envelope.run_id is confirmed to be an open run of the caller.
+	runOK bool
 }
 
 // Invoke runs a tool call end to end.
@@ -154,6 +156,9 @@ func (g *Gateway) precheck(c *call) *ToolError {
 	if c.p.IsAgent() && c.env.Reason == "" {
 		return newErr(ErrValidation, "agents must state a reason for every call (envelope.reason)")
 	}
+	if c.env.RunID != "" && (!c.p.IsAgent() || !isUUID(c.env.RunID)) {
+		return newErr(ErrValidation, "envelope.run_id must be the id of one of your agent runs")
+	}
 	if c.tool.Mutates && c.env.IdempotencyKey == "" && !c.env.DryRun {
 		return newErr(ErrValidation, "mutating tools require envelope.idempotency_key")
 	}
@@ -207,6 +212,10 @@ func (g *Gateway) run(ctx context.Context, tx pgx.Tx, c *call, applyAutonomy boo
 			return nil, &ToolError{Code: ErrStateConflict, Message: "application changed since it was read",
 				Details: map[string]any{"expected": *v, "actual": c.app.StateVersion}}
 		}
+	}
+
+	if err := g.checkRun(ctx, tx, c); err != nil {
+		return nil, err
 	}
 
 	// 2. Authorize the actor and, when delegated, the represented principal (both must pass).
@@ -273,7 +282,7 @@ func (g *Gateway) run(ctx context.Context, tx pgx.Tx, c *call, applyAutonomy boo
 			return nil, err
 		}
 	}
-	if c.app != nil && c.tool.Mutates && c.tool.Name != "approval.respond" {
+	if c.app != nil && c.tool.Mutates && !noSnapshot[c.tool.Name] {
 		if err := g.refresh(ctx, tx, c); err != nil {
 			return nil, err
 		}
@@ -508,10 +517,10 @@ func (g *Gateway) recordInvocation(ctx context.Context, tx pgx.Tx, c *call, resp
 	policyResult, _ := json.Marshal(map[string]any{"pack": g.Pack.Name, "pack_version": g.Pack.Version})
 	_, err := tx.Exec(ctx, `INSERT INTO tool_invocations
 		(id, tenant_id, tool, tool_version, actor, on_behalf_of, application_id, idempotency_key, input_sha256,
-		 reason, dry_run, autonomy, policy_result, outcome, error_code, response, trace_id, finished_at)
-		VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),$7,$8,$9,NULLIF($10,''),$11,$12,$13,$14,NULLIF($15,''),$16,NULLIF($17,''),now())`,
+		 reason, dry_run, autonomy, policy_result, outcome, error_code, response, trace_id, agent_run_id, finished_at)
+		VALUES ($1,$2,$3,$4,$5,NULLIF($6,''),$7,$8,$9,NULLIF($10,''),$11,$12,$13,$14,NULLIF($15,''),$16,NULLIF($17,''),$18,now())`,
 		resp.InvocationID, c.tenantID, c.tool.Name, c.tool.Version, c.p.ID, onBehalf, appID, key, g.inputHash(c),
-		reason, c.env.DryRun, autonomy, policyResult, outcome, errorCode, stored, c.env.TraceID)
+		reason, c.env.DryRun, autonomy, policyResult, outcome, errorCode, stored, c.env.TraceID, runRef(c))
 	return err
 }
 
@@ -623,4 +632,12 @@ func redact(resp *Response) *Response {
 	r := *resp
 	r.Result = copied
 	return &r
+}
+
+// runRef is the envelope's run id once it has been checked, for the invocation record.
+func runRef(c *call) *string {
+	if c.runOK {
+		return &c.env.RunID
+	}
+	return nil
 }

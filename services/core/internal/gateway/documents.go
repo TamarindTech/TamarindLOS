@@ -256,6 +256,11 @@ func (g *Gateway) documentClassify(ctx context.Context, tx pgx.Tx, c *call) (any
 	}
 	c.addEvent("DocumentClassified", map[string]any{"document_id": d.ID, "document_type": cl.DocumentType,
 		"confidence": cl.Confidence, "model": cl.Model})
+	if cl.DocumentType != "other" {
+		if err := g.completeDocumentRequests(ctx, tx, c, d.ID, d.PartyID, cl.DocumentType); err != nil {
+			return nil, err
+		}
+	}
 	return map[string]any{"document_id": d.ID, "document_type": cl.DocumentType, "confidence": cl.Confidence,
 		"declared_type": d.DeclaredType, "matches_declared": d.DeclaredType == "" || d.DeclaredType == cl.DocumentType}, nil
 }
@@ -351,16 +356,27 @@ func (g *Gateway) documentRequest(ctx context.Context, tx pgx.Tx, c *call) (any,
 		return nil, err
 	}
 	docType := str(c.input, "document_type")
+	// One open request per document and party: asking again returns the open one.
+	var existing string
+	err = tx.QueryRow(ctx, `SELECT id::text FROM tasks WHERE application_id = $1 AND kind = 'document_request'
+		AND status IN ('open', 'in_progress') AND details->>'document_type' = $2 AND details->>'party_id' = $3 LIMIT 1`,
+		c.app.ID, docType, p.PartyID).Scan(&existing)
+	if err == nil {
+		return map[string]any{"task_id": existing, "notified_via": "already_requested"}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
 	assignee := c.app.Borrower
 	if assignee == "" {
 		assignee = "role:loan_officer" // no portal user yet: staff collect it
 	}
 	details, _ := json.Marshal(map[string]any{"party_id": p.PartyID, "document_type": docType, "message": str(c.input, "message")})
 	taskID := newUUID()
-	if _, err := tx.Exec(ctx, `INSERT INTO tasks (id, tenant_id, application_id, kind, title, details, assignee, created_by, due_at)
-		VALUES ($1,$2,$3,'document_request',$4,$5,$6,$7,$8)`, taskID, c.tenantID, c.app.ID,
+	if _, err := tx.Exec(ctx, `INSERT INTO tasks (id, tenant_id, application_id, kind, title, details, assignee, created_by, due_at, agent_run_id)
+		VALUES ($1,$2,$3,'document_request',$4,$5,$6,$7,$8,$9)`, taskID, c.tenantID, c.app.ID,
 		fmt.Sprintf("Provide %s for %s", strings.ReplaceAll(docType, "_", " "), p.LegalName), details, assignee, c.p.ID,
-		g.Now().Add(7*24*time.Hour)); err != nil {
+		g.Now().Add(7*24*time.Hour), runRef(c)); err != nil {
 		return nil, err
 	}
 	via := "task"

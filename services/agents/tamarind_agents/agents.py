@@ -31,6 +31,9 @@ class Outcome:
     action: str  # acted | skipped | escalated
     detail: str = ""
     calls: list[dict[str, Any]] = field(default_factory=list)
+    # For escalations: the task to hand to a person (kind, title, details, assignee).
+    # The runtime creates it; without one it files a generic resolve_exception task.
+    task: dict[str, Any] | None = None
 
 
 class Agent:
@@ -115,8 +118,12 @@ class VerificationAgent(Agent):
             out.calls.append(call)
             if not r.ok:
                 log.warning("verification: %s on %s failed: %s %s", tool, args["party_id"], r.error_code, r.error_message)
-        states = [c for c in out.calls if c["check"] in ("needs_review", "failed")]
-        out.detail = f"{len(out.calls)} checks run" + (f", {len(states)} need review" if states else "")
+        flagged = [c for c in out.calls if c["check"] in ("needs_review", "failed")]
+        out.detail = f"{len(out.calls)} checks run" + (f", {len(flagged)} need review" if flagged else "")
+        if flagged:
+            out.action = "escalated"
+            out.task = {"kind": "review_check", "title": f"Review {len(flagged)} verification result(s) on {app.get('reference', app_id)}",
+                        "details": {"checks": flagged}}
         return out
 
 
@@ -168,7 +175,9 @@ class DocumentAgent(Agent):
             return Outcome("escalated", f"classification failed: {cl.error_code}", out.calls)
         doc_type, confidence = cl.result.get("document_type"), cl.result.get("confidence", 0)
         if doc_type == "other" or confidence < self.min_classification_confidence:
-            return Outcome("escalated", "document not recognised; a person must look at it", out.calls)
+            return Outcome("escalated", "document not recognised; a person must look at it", out.calls,
+                           task={"kind": "review_document", "title": "Identify an unrecognised document",
+                                 "details": {"document_id": doc_id, "classified_as": doc_type, "confidence": confidence}})
 
         ex = client.call("document.extract", {"document_id": doc_id}, reason=f"documents: extract fields from {doc_type}",
                          key=self.key(event, "extract"))
@@ -179,7 +188,7 @@ class DocumentAgent(Agent):
         app = self.snapshot(client, app_id, "documents: compare extracted fields with the application") or {}
         refs = self.references(app, data.get("party_id") or "")
 
-        reviews = 0
+        reviews: list[dict[str, Any]] = []
         for e in ex.result.get("evidence") or []:
             field = e["field"]
             if field in low:
@@ -192,9 +201,61 @@ class DocumentAgent(Agent):
                             reason=f"documents: check {field}", key=self.key(event, "verify", e["evidence_id"]))
             out.calls.append({"tool": "evidence.verify", "field": field, "status": r.status, "result": status,
                               "error": r.error_code})
-            reviews += status == "needs_review"
+            if status == "needs_review":
+                reviews.append({"evidence_id": e["evidence_id"], "field": field, "note": note})
         count = len(ex.result.get("evidence") or [])
-        out.detail = f"{doc_type} ({confidence:.2f}): {count} fields" + (f", {reviews} for a person" if reviews else "")
+        out.detail = f"{doc_type} ({confidence:.2f}): {count} fields" + (f", {len(reviews)} for a person" if reviews else "")
+        if reviews:
+            out.action = "escalated"
+            out.task = {"kind": "review_evidence",
+                        "title": f"Review {', '.join(r['field'] for r in reviews)} on {doc_type.replace('_', ' ')}",
+                        "details": {"document_id": doc_id, "evidence": reviews}}
+        return out
+
+
+# --- Intake agent ---------------------------------------------------------------------
+
+
+class IntakeAgent(Agent):
+    """Asks for whatever the application still lacks once it is submitted.
+
+    Requests go to the borrower's portal (or to the loan officers when there is no
+    borrower login). The gateway keeps one open request per document and party, and
+    the request closes itself when a document of that type is classified.
+    """
+
+    name = "intake"
+    principal = "agent:intake"
+
+    def wants(self, event: dict[str, Any]) -> bool:
+        return self.entered(event, "intake")
+
+    def handle(self, event: dict[str, Any], client: Client) -> Outcome:
+        app_id = event["aggregate_id"]
+        app = self.snapshot(client, app_id, "intake: read application after submission")
+        if app is None:
+            return Outcome("escalated", "application not readable")
+        if app["state"] != "intake":
+            return Outcome("skipped", f"application is now {app['state']}")
+        # A document already uploaded for that slot is waiting for classification: don't ask again.
+        pending = {(d.get("party_id", ""), d.get("declared_type")) for d in app.get("documents") or []
+                   if d.get("status") == "received"}
+        missing = [m for m in app.get("missing_document_items") or []
+                   if (m["party_id"], m["document_type"]) not in pending and ("", m["document_type"]) not in pending]
+        if not missing:
+            return Outcome("skipped", "nothing missing")
+        out = Outcome("acted")
+        for item in missing:
+            doc_type, party = item["document_type"], item["party_id"]
+            r = client.call("document.request", {"application_id": app_id, "party_id": party, "document_type": doc_type,
+                                                 "message": f"Please upload the {doc_type.replace('_', ' ')}."},
+                            reason=f"intake: {doc_type} is required and missing", key=self.key(event, "request", party, doc_type))
+            out.calls.append({"tool": "document.request", "document_type": doc_type, "party_id": party, "status": r.status,
+                              "via": r.result.get("notified_via"), "error": r.error_code})
+        failed = [c for c in out.calls if c["status"] != "ok"]
+        out.detail = f"requested {len(out.calls) - len(failed)} document(s)"
+        if failed:
+            return Outcome("escalated", out.detail + f"; {len(failed)} request(s) failed", out.calls)
         return out
 
 
@@ -290,4 +351,5 @@ class UnderwritingAgent(Agent):
 
 
 def builtin_agents(narrator: Narrator | None = None) -> dict[str, Agent]:
-    return {"documents": DocumentAgent(), "verification": VerificationAgent(), "underwriting": UnderwritingAgent(narrator)}
+    return {"intake": IntakeAgent(), "documents": DocumentAgent(), "verification": VerificationAgent(),
+            "underwriting": UnderwritingAgent(narrator)}

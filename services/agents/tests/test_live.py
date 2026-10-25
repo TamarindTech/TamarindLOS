@@ -14,7 +14,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from tamarind_agents.agents import DocumentAgent, UnderwritingAgent, VerificationAgent
+from tamarind_agents.agents import DocumentAgent, IntakeAgent, UnderwritingAgent, VerificationAgent
 from tamarind_agents.client import TamarindClient
 from tamarind_agents.runtime import Worker
 
@@ -55,7 +55,15 @@ def upload(app: str, party: str, doc_type: str, content: bytes) -> None:
     assert r["status"] == "ok", r
 
 
-def new_application(name: str, amount: int = 5000000) -> str:
+DOCS = {
+    "business_registration": lambda name: mock_doc("business_registration", "registration_number: 0105561234567", f"legal_name: {name}"),
+    "bank_statements": lambda name: mock_doc("bank_statements", f"account_holder: {name}", "months_covered: 12"),
+    "proof_of_address": lambda name: mock_doc("proof_of_address", "address: 88 Riverside Road?"),
+    "financial_statements": lambda name: mock_doc("financial_statements", "years_covered: 2"),
+}
+
+
+def new_application(name: str, amount: int = 5000000, omit: tuple[str, ...] = ()) -> str:
     r = rest("dev-officer-ana", "application.create", {"product_code": "SME-WC", "requested_amount_minor": amount,
              "currency": "USD", "requested_term_months": 12, "borrower": "borrower:mekong"})
     app = r["result"]["application_id"]
@@ -64,11 +72,9 @@ def new_application(name: str, amount: int = 5000000) -> str:
     d = rest("dev-officer-ana", "party.add", {"application_id": app, "kind": "individual", "role": "director",
              "legal_name": "Somchai P.", "date_of_birth": "1980-04-02"})["result"]["party_id"]
     assert rest("dev-officer-ana", "application.submit", {"application_id": app})["status"] == "ok"
-    upload(app, biz, "business_registration", mock_doc("business_registration", "registration_number: 0105561234567",
-                                                       f"legal_name: {name}"))
-    upload(app, biz, "bank_statements", mock_doc("bank_statements", f"account_holder: {name}", "months_covered: 12"))
-    upload(app, biz, "proof_of_address", mock_doc("proof_of_address", "address: 88 Riverside Road?"))
-    upload(app, biz, "financial_statements", mock_doc("financial_statements", "years_covered: 2"))
+    for doc_type, content in DOCS.items():
+        if doc_type not in omit:
+            upload(app, biz, doc_type, content(name))
     upload(app, d, "identity_document", mock_doc("identity_document", "legal_name: Somchai P.", "date_of_birth: 1980-04-02"))
     for party, scope in [(biz, "kyc"), (biz, "credit_bureau"), (biz, "bank_data"), (d, "kyc")]:
         r = rest("dev-borrower-mekong", "consent.record", {"application_id": app, "party_id": party, "scope": scope,
@@ -84,12 +90,22 @@ class LiveAgentsTest(unittest.TestCase):
         self.addCleanup(self.state.cleanup)
 
     def run_agents(self):
-        for agent, token in [(DocumentAgent(), "dev-agent-documents"), (VerificationAgent(), "dev-agent-verification"),
-                             (UnderwritingAgent(), "dev-agent-underwriting")]:
+        for agent, token in [(IntakeAgent(), "dev-agent-intake"), (DocumentAgent(), "dev-agent-documents"),
+                             (VerificationAgent(), "dev-agent-verification"), (UnderwritingAgent(), "dev-agent-underwriting")]:
             Worker(agent, TamarindClient(URL, token), Path(self.state.name)).drain()
 
     def get(self, app):
         return rest("dev-officer-ana", "application.get", {"application_id": app})["result"]["application"]
+
+    def tasks(self, app, **kw):
+        r = rest("dev-officer-ana", "task.list", {"application_id": app, "assignee": "any", **kw})
+        self.assertEqual(r["status"], "ok", r)
+        return r["result"]["tasks"]
+
+    def runs(self, app):
+        r = rest("dev-officer-ana", "agent.run_list", {"application_id": app})
+        self.assertEqual(r["status"], "ok", r)
+        return r["result"]["runs"]
 
     def pending(self, app):
         r = rest("dev-officer-chai", "application.get", {"application_id": app})
@@ -101,6 +117,7 @@ class LiveAgentsTest(unittest.TestCase):
         healthy = new_application("Agentic Trading Co.")
         thin = new_application("Thin Margin THIN Ltd")
         sanctioned = new_application("Blocked SANCTION Imports")
+        late = new_application("Late Papers Co.", omit=("bank_statements",))
         self.run_agents()
 
         app = self.get(healthy)
@@ -133,9 +150,42 @@ class LiveAgentsTest(unittest.TestCase):
         self.assertEqual(self.get(sanctioned)["state"], "referred")
         self.assertEqual(self.pending(sanctioned), [])
 
+        # Every agent action is a recorded run; the address that needs a person is a task
+        # in the loan officers' queue, linked to the document agent's run.
+        runs = self.runs(healthy)
+        by_agent = {}
+        for r in runs:
+            by_agent.setdefault(r["agent"], []).append(r["status"])
+        self.assertEqual(sorted(by_agent["agent:documents"]), ["escalated"] + ["succeeded"] * 4)
+        self.assertEqual(by_agent["agent:verification"], ["succeeded"])
+        self.assertEqual(by_agent["agent:underwriting"], ["succeeded"])
+        self.assertEqual(by_agent["agent:intake"], ["cancelled"])  # everything was already uploaded
+        self.assertTrue(all(r["steps"] > 0 for r in runs if r["status"] != "cancelled"))
+        review = [t for t in self.tasks(healthy) if t["kind"] == "review_evidence"]
+        self.assertEqual(len(review), 1)
+        self.assertEqual(review[0]["assignee"], "role:loan_officer")
+        escalated = next(r for r in runs if r["status"] == "escalated")
+        self.assertEqual(escalated["escalation_task_id"], review[0]["task_id"])
+        self.assertEqual(review[0]["agent_run_id"], escalated["run_id"])
+
+        # The intake agent asked the borrower for the missing bank statements ...
+        self.assertEqual(self.get(late)["state"], "intake")
+        asks = [t for t in self.tasks(late) if t["kind"] == "document_request"]
+        self.assertEqual([(t["details"]["document_type"], t["assignee"]) for t in asks], [("bank_statements", "borrower:mekong")])
+        # ... the borrower uploads them, the request closes and the case moves on.
+        app = self.get(late)
+        biz = next(p["party_id"] for p in app["parties"] if p["role"] == "applicant")
+        upload(late, biz, "bank_statements", DOCS["bank_statements"]("Late Papers Co."))
+        self.run_agents()
+        self.assertEqual(self.tasks(late, kind="document_request"), [])
+        done = self.tasks(late, kind="document_request", status="done")
+        self.assertEqual(done[0]["completed_by"], "agent:documents")
+        self.assertEqual(self.get(late)["state"], "underwriting")
+
         # Running again does nothing new (cursors and idempotency keys).
         self.run_agents()
         self.assertEqual(len(self.pending(thin)), 1)
+        self.assertEqual(len(self.runs(healthy)), len(runs))
 
 
 if __name__ == "__main__":

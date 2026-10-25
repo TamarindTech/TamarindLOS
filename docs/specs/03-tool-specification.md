@@ -59,6 +59,7 @@ Every call, whether through REST or MCP, carries an envelope in addition to the 
 | `reason` | for agents | Why the agent is calling the tool. Stored in the audit trail. Enforced in the database. |
 | `on_behalf_of` | for delegated calls | The user or organisation the actor represents. |
 | `trace_id` | no | W3C trace ID that links agent runs, tool calls and connector calls. |
+| `run_id` | agents, inside a run | The agent run (`agent.run_start`) the call belongs to. Only the agent that opened the run may use it; changes are refused once the run is closed. |
 
 ## 4. Gateway processing order
 

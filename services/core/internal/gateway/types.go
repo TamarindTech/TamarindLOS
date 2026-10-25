@@ -13,6 +13,8 @@ type Envelope struct {
 	Reason               string `json:"reason,omitempty"`
 	OnBehalfOf           string `json:"on_behalf_of,omitempty"`
 	TraceID              string `json:"trace_id,omitempty"`
+	// RunID links the call to an open agent run (agent.run_start).
+	RunID string `json:"run_id,omitempty"`
 }
 
 // Response is returned for every invocation, over REST and MCP alike.
