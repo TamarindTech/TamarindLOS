@@ -1,6 +1,7 @@
 package policy_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/catalogue"
@@ -135,5 +136,28 @@ func TestEffectiveAutonomy(t *testing.T) {
 		if got != c.want || policy.OutcomeFor(got) != c.outcome {
 			t.Errorf("%s with trust %s: got %s (%s), want %s (%s)", c.tool, c.trust, got, policy.OutcomeFor(got), c.want, c.outcome)
 		}
+	}
+}
+
+func TestRiskGrading(t *testing.T) {
+	cat, pack := load(t)
+	// No data at all: every factor is missing, the grade is the lowest band.
+	rg := pack.GradeRisk(map[string]any{})
+	if rg == nil || rg.Grade != "C" || rg.Points != 0 || len(rg.Missing) != len(pack.RiskGrading.Factors) {
+		t.Fatalf("empty input: %+v", rg)
+	}
+	if rg.MaxPoints != 100 {
+		t.Errorf("max points should count one DSCR tier: %d", rg.MaxPoints)
+	}
+	if rg.APRBps != pack.Product.Pricing.APRBpsByGrade["C"] {
+		t.Errorf("apr %d", rg.APRBps)
+	}
+	// A band whose grade has no price, or no band at zero, is a pack error.
+	saved := pack.RiskGrading.Bands
+	pack.RiskGrading.Bands = []policy.RiskBand{{Grade: "A", MinPoints: 70}, {Grade: "Z", MinPoints: 10}}
+	problems := strings.Join(pack.Validate(cat), "\n")
+	pack.RiskGrading.Bands = saved
+	if !strings.Contains(problems, "grade Z has no price") || !strings.Contains(problems, "min_points 0") {
+		t.Errorf("validation: %s", problems)
 	}
 }

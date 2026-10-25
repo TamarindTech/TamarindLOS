@@ -226,8 +226,12 @@ func (g *Gateway) policyEvaluate(_ context.Context, _ pgx.Tx, c *call) (any, err
 		}
 	}
 	ev := g.evaluate(c, sets)
-	return map[string]any{"pack": g.Pack.Name, "pack_version": g.Pack.Version, "outcome": ev.Outcome,
-		"results": ev.Results, "failed": failedReasons(ev), "metrics": c.app.Metrics}, nil
+	out := map[string]any{"pack": g.Pack.Name, "pack_version": g.Pack.Version, "outcome": ev.Outcome,
+		"results": ev.Results, "failed": failedReasons(ev), "metrics": c.app.Metrics}
+	if rg := g.riskGrade(c); rg != nil {
+		out["risk_grade"] = riskView(rg, !c.app.allMandatoryChecksDone())
+	}
+	return out, nil
 }
 
 // terms reads amount, term and rate from a terms object.
@@ -324,32 +328,48 @@ func (g *Gateway) decisionRecommend(ctx context.Context, tx pgx.Tx, c *call) (an
 	if outcome == "approve_with_conditions" && len(stringList(c.input["conditions"])) == 0 {
 		return nil, newErr(ErrValidation, "approve_with_conditions needs at least one condition")
 	}
+	proposedBy := c.p.ID
+	if c.proposedBy != "" {
+		proposedBy = c.proposedBy
+	}
+	rg := g.riskGrade(c)
+	inputs := map[string]any{"checks": c.app.ChecksSummary, "metrics": c.app.Metrics, "proposed_by": proposedBy}
 	var t *terms
 	if approving {
 		tt := termsFrom(mapOf(c.input["terms"]), terms{AmountMinor: c.app.RequestedAmountMinor,
-			TermMonths: c.app.RequestedTermMonths, RateAPRBps: int64(g.Pack.Product.ReferenceAPRBps())})
+			TermMonths: c.app.RequestedTermMonths, RateAPRBps: g.defaultRate(rg)})
 		if e := g.validTerms(c.app, tt); e != nil {
 			return nil, e
 		}
+		pricing, e := g.checkPricing(c, rg, tt, proposedBy)
+		if e != nil {
+			return nil, e
+		}
+		inputs["pricing"] = pricing
 		t = &tt
+	}
+	if rg != nil {
+		inputs["risk_grade"] = riskView(rg, false)
 	}
 	var confidence *float64
 	if v, ok := c.input["confidence"].(float64); ok {
 		confidence = &v
 	}
-	proposedBy := c.p.ID
-	if c.proposedBy != "" {
-		proposedBy = c.proposedBy
-	}
-	inputs := map[string]any{"checks": c.app.ChecksSummary, "metrics": c.app.Metrics, "proposed_by": proposedBy}
 	id, err := g.insertDecision(ctx, tx, c, "recommendation", outcome, t, stringList(c.input["conditions"]),
-		stringList(c.input["reason_codes"]), inputs, ev, str(c.input, "narrative"), confidence, "", c.input["models"])
+		stringList(c.input["reason_codes"]), inputs, ev, str(c.input, "narrative"), confidence, "", withScorecard(c.input["models"], rg))
 	if err != nil {
 		return nil, err
 	}
-	c.addEvent("DecisionRecommended", map[string]any{"decision_record_id": id, "outcome": outcome,
-		"policy_outcome": ev.Outcome, "proposed_by": proposedBy})
-	return map[string]any{"decision_record_id": id, "outcome": outcome, "policy_outcome": ev.Outcome}, nil
+	data := map[string]any{"decision_record_id": id, "outcome": outcome, "policy_outcome": ev.Outcome, "proposed_by": proposedBy}
+	out := map[string]any{"decision_record_id": id, "outcome": outcome, "policy_outcome": ev.Outcome}
+	if rg != nil {
+		data["risk_grade"], out["risk_grade"] = rg.Grade, rg.Grade
+	}
+	if t != nil {
+		out["terms"] = t.asMap()
+	}
+	c.addEvent("DecisionRecommended", data)
+	return out, nil
 }
 
 func mapOf(v any) map[string]any {
@@ -371,12 +391,24 @@ func (g *Gateway) decisionApprove(ctx context.Context, tx pgx.Tx, c *call) (any,
 		return nil, &ToolError{Code: ErrPrecondition, Message: "policy declines this application",
 			Details: map[string]any{"failed": failedReasons(ev)}}
 	}
-	t := termsFrom(mapOf(c.input["amended_terms"]), termsFrom(rec.Terms, terms{}))
+	recTerms := termsFrom(rec.Terms, terms{})
+	t := termsFrom(mapOf(c.input["amended_terms"]), recTerms)
 	if e := g.validTerms(c.app, t); e != nil {
 		return nil, e
 	}
 	outcome := rec.Outcome
 	inputs := map[string]any{"note": str(c.input, "note"), "amended": c.input["amended_terms"] != nil}
+	// The recommended price stands unless the approver changes the rate; a new rate is
+	// checked against the current risk grade like any other.
+	if t.RateAPRBps != recTerms.RateAPRBps {
+		pricing, e := g.checkPricing(c, g.riskGrade(c), t, "")
+		if e != nil {
+			return nil, e
+		}
+		inputs["pricing"] = pricing
+	} else {
+		inputs["pricing"] = map[string]any{"apr_bps": t.RateAPRBps, "from_recommendation": rec.ID}
+	}
 	id, err := g.insertDecision(ctx, tx, c, "decision", outcome, &t, rec.Conditions, rec.ReasonCodes, inputs, ev, "", nil, rec.ID, nil)
 	if err != nil {
 		return nil, err

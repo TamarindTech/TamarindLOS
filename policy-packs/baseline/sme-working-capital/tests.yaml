@@ -16,7 +16,7 @@ defaults: &strong
     sanctions: { confirmed_match: false }
     kyc: { all_passed: true }
     kyb: { status: passed }
-    bureau: { serious_default_24m: false }
+    bureau: { serious_default_24m: false, score: 720 }
   metrics:
     dscr: 1.8
     annual_revenue_minor: 24000000
@@ -26,7 +26,42 @@ defaults: &strong
 cases:
   - name: strong applicant passes
     input: *strong
-    expect: { outcome: pass, failed: [] }
+    expect: { outcome: pass, failed: [], grade: A }
+
+  - name: adequate applicant passes at grade B
+    input:
+      <<: *strong
+      application:
+        requested_amount_minor: 3000000
+        requested_term_months: 12
+        business: { months_trading: 40 }
+        directors: [ { age_years: 45 } ]
+      checks:
+        sanctions: { confirmed_match: false }
+        kyc: { all_passed: true }
+        kyb: { status: passed }
+        bureau: { serious_default_24m: false, score: 650 }
+      metrics:
+        dscr: 1.45
+        annual_revenue_minor: 15000000
+        bank_months: 12
+        negative_balance_days_6m: 3
+    expect: { outcome: pass, failed: [], grade: B }
+
+  - name: missing bureau score does not help the grade
+    input:
+      <<: *strong
+      checks:
+        sanctions: { confirmed_match: false }
+        kyc: { all_passed: true }
+        kyb: { status: passed }
+        bureau: { serious_default_24m: false }
+      metrics:
+        dscr: 1.45
+        annual_revenue_minor: 15000000
+        bank_months: 8
+        negative_balance_days_6m: 3
+    expect: { outcome: pass, failed: [], grade: C }
 
   - name: sanctions match is declined
     input:

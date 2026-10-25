@@ -224,8 +224,24 @@ func TestLoanJourney(t *testing.T) {
 	if dscr := sub(r.Result, "metrics")["dscr"].(float64); dscr < 1.25 {
 		t.Fatalf("dscr %v", dscr)
 	}
+	// The scorecard grades the application; staff see the grade, the borrower does not.
+	grade := sub(e.state(officer, appID), "risk_grade")
+	if grade["grade"] != "A" || grade["apr_bps"] != float64(1400) || grade["provisional"] != false {
+		t.Fatalf("risk grade: %+v", grade)
+	}
+	if _, ok := e.state(borrower, appID)["risk_grade"]; ok {
+		t.Error("the borrower should not see the risk grade")
+	}
+	// Agents price at the grade: a different rate is refused even as a proposal.
 	r = e.call(uwAgent, "decision.recommend", map[string]any{"application_id": appID, "outcome": "approve",
 		"terms":        map[string]any{"amount_minor": 5000000, "term_months": 12, "rate_apr_bps": 1900},
+		"reason_codes": []string{"STRONG_CASH_FLOW"}, "narrative": "x"}, uw)
+	expect(t, r, "approval_required", "") // gated first; refused when a person approves it
+	expect(t, e.call(officer2, "approval.respond", map[string]any{"approval_request_id": r.ApprovalRequestID,
+		"decision": "approve"}, nil), "error", "POLICY_DENIED")
+
+	r = e.call(uwAgent, "decision.recommend", map[string]any{"application_id": appID, "outcome": "approve",
+		"terms":        map[string]any{"amount_minor": 5000000, "term_months": 12},
 		"reason_codes": []string{"STRONG_CASH_FLOW", "CLEAN_BUREAU"}, "confidence": 0.86,
 		"narrative": "Four years trading, DSCR above policy, clean bureau and screening.",
 		"models":    []map[string]any{{"kind": "rules", "id": "baseline/sme-working-capital", "version": "0.1.0"}}}, uw)
@@ -236,6 +252,14 @@ func TestLoanJourney(t *testing.T) {
 	r = e.call(officer2, "approval.list", map[string]any{"application_id": appID}, nil)
 	expect(t, r, "ok", "")
 	queue := r.Result["approval_requests"].([]any)
+	if len(queue) == 2 { // the refused proposal is still pending; reject it
+		for _, q := range queue {
+			if id := q.(map[string]any)["approval_request_id"]; id != proposalID {
+				expect(t, e.call(officer2, "approval.respond", map[string]any{"approval_request_id": id, "decision": "reject"}, nil), "ok", "")
+			}
+		}
+		queue = e.call(officer2, "approval.list", map[string]any{"application_id": appID}, nil).Result["approval_requests"].([]any)
+	}
 	if len(queue) != 1 || queue[0].(map[string]any)["approval_request_id"] != proposalID ||
 		queue[0].(map[string]any)["you_can_decide"] != true || queue[0].(map[string]any)["tool"] != "decision.recommend" {
 		t.Fatalf("approval queue: %+v", queue)
@@ -247,6 +271,9 @@ func TestLoanJourney(t *testing.T) {
 		"note": "memo reviewed"}, nil)
 	expect(t, r, "ok", "")
 	recID := sub(r.Result, "result")["decision_record_id"].(string)
+	if rate := sub(sub(r.Result, "result"), "terms")["rate_apr_bps"]; rate != float64(1400) {
+		t.Errorf("recommended rate should be the grade-A price: %v", rate)
+	}
 
 	// --- Approval: the limit and maker-checker hold; a senior approver decides. ---
 	approve := map[string]any{"application_id": appID, "recommendation_id": recID}
@@ -256,12 +283,25 @@ func TestLoanJourney(t *testing.T) {
 	expect(t, r, "error", "POLICY_DENIED") // Chai recorded the recommendation
 	r = e.call(uwAgent, "decision.approve", approve, uw)
 	expect(t, r, "error", "POLICY_DENIED") // agents never decide
+	// A person may price differently, with a reason, but not below the cheapest grade.
+	approve["amended_terms"] = map[string]any{"rate_apr_bps": 1200}
+	expect(t, e.call(senior, "decision.approve", approve, nil), "error", "VALIDATION_FAILED")
+	approve["amended_terms"] = map[string]any{"rate_apr_bps": 1600}
+	expect(t, e.call(senior, "decision.approve", approve, nil), "error", "VALIDATION_FAILED")
+	approve["pricing_override_reason"] = "unsecured exposure above the usual size for a new customer"
 	r = e.call(senior, "decision.approve", approve, nil)
 	expect(t, r, "ok", "")
 	if r.Result["state"] != "decisioned" {
 		t.Fatalf("after approval: %+v", r.Result)
 	}
 	decisionID := r.Result["decision_record_id"].(string)
+	var override map[string]any
+	if err := e.withTenant(context.Background(), func(q querier) error {
+		return q.QueryRow(context.Background(), `SELECT inputs->'pricing'->'override' FROM decision_records WHERE id = $1`,
+			decisionID).Scan(&override)
+	}); err != nil || override["by"] != "user:approver.sara" || override["delta_bps"] != float64(200) {
+		t.Errorf("pricing override not recorded: %v %+v", err, override)
+	}
 
 	// --- Offer: generated and sent by staff, accepted by the borrower. ---
 	r = e.call(officer, "offer.generate", map[string]any{"application_id": appID, "decision_record_id": decisionID}, nil)

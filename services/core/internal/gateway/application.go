@@ -560,6 +560,7 @@ func (g *Gateway) summarize(a *appRecord) {
 		}
 	}
 	sanctionsMatch, seriousDefault := false, false
+	var bureauScore *int64 // lowest commercial bureau score on file
 	for _, c := range a.Checks {
 		if c.Type == "sanctions" && c.Result["confirmed_match"] == true {
 			sanctionsMatch = true
@@ -567,6 +568,15 @@ func (g *Gateway) summarize(a *appRecord) {
 		if c.Type == "credit_bureau" && c.Result["serious_default_24m"] == true {
 			seriousDefault = true
 		}
+		if c.Type == "credit_bureau" && c.Result["report_type"] == "commercial" {
+			if s, ok := num(c.Result, "score"); ok && (bureauScore == nil || s < *bureauScore) {
+				bureauScore = &s
+			}
+		}
+	}
+	bureau := map[string]any{"serious_default_24m": seriousDefault}
+	if bureauScore != nil {
+		bureau["score"] = *bureauScore
 	}
 	a.ChecksSummary = map[string]any{
 		"all_mandatory_complete": total > 0 && done == total,
@@ -576,7 +586,7 @@ func (g *Gateway) summarize(a *appRecord) {
 		"sanctions":              map[string]any{"confirmed_match": sanctionsMatch},
 		"kyc":                    map[string]any{"all_passed": kycSeen && kycAll},
 		"kyb":                    map[string]any{"status": kybStatus},
-		"bureau":                 map[string]any{"serious_default_24m": seriousDefault},
+		"bureau":                 bureau,
 	}
 
 	// Business facts and directors.
@@ -784,4 +794,11 @@ func (g *Gateway) applicationIDFor(ctx context.Context, tx pgx.Tx, c *call) (str
 		return lookup("agent_runs", "run_id")
 	}
 	return "", nil
+}
+
+// allMandatoryChecksDone reports whether every mandatory check has a result, so that
+// the risk grade is final rather than provisional.
+func (a *appRecord) allMandatoryChecksDone() bool {
+	done, _ := a.ChecksSummary["all_mandatory_complete"].(bool)
+	return done
 }

@@ -117,6 +117,7 @@ type Pack struct {
 	AuthorizationFile string                `json:"authorization"`
 	Autonomy          map[string]string     `json:"autonomy"`
 	ApprovalAuthority []Authority           `json:"approval_authority"`
+	RiskGrading       *RiskGrading          `json:"risk_grading"`
 	Evidence          struct {
 		// Agents may mark evidence verified only at or above this extraction confidence.
 		MinConfidenceAutoVerify float64 `json:"min_confidence_auto_verify"`
@@ -236,6 +237,7 @@ func (p *Pack) Validate(cat *catalogue.Catalogue) []string {
 				name, t.Transition.From, t.Transition.To, sm[0].From, sm[0].To)
 		}
 	}
+	problems = append(problems, p.validateRiskGrading()...)
 	for _, d := range p.Documents {
 		if d.RequiredWhen != "" {
 			if _, err := p.Exprs.Compile(d.RequiredWhen); err != nil {

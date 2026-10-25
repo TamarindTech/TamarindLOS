@@ -121,7 +121,14 @@ func (g *Gateway) applicationCreate(ctx context.Context, tx pgx.Tx, c *call) (an
 
 // application.get
 func (g *Gateway) applicationGet(_ context.Context, _ pgx.Tx, c *call) (any, error) {
-	return map[string]any{"application": c.app.view(), "state_version": c.app.StateVersion}, nil
+	view := c.app.view()
+	// The risk grade drives pricing: staff and agents see it, borrowers see their offer.
+	if c.p.Kind() != "borrower" {
+		if rg := g.riskGrade(c); rg != nil {
+			view["risk_grade"] = riskView(rg, !c.app.allMandatoryChecksDone())
+		}
+	}
+	return map[string]any{"application": view, "state_version": c.app.StateVersion}, nil
 }
 
 // application.submit

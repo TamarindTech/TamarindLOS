@@ -194,6 +194,7 @@ func (p *Pack) RunRuleTests() ([]TestCaseResult, error) {
 			Expect struct {
 				Outcome string   `yaml:"outcome"`
 				Failed  []string `yaml:"failed"`
+				Grade   string   `yaml:"grade"` // optional: the risk grade the scorecard must give
 			} `yaml:"expect"`
 		} `yaml:"cases"`
 	}
@@ -206,9 +207,20 @@ func (p *Pack) RunRuleTests() ([]TestCaseResult, error) {
 		want := append([]string{}, c.Expect.Failed...)
 		sort.Strings(want)
 		got := ev.Failed()
+		gotOutcome, wantOutcome := ev.Outcome, c.Expect.Outcome
+		gradeOK := true
+		if c.Expect.Grade != "" {
+			grade, points := "none", 0
+			if rg := p.GradeRisk(c.Input); rg != nil {
+				grade, points = rg.Grade, rg.Points
+			}
+			gradeOK = grade == c.Expect.Grade
+			gotOutcome += fmt.Sprintf(", grade %s (%d points)", grade, points)
+			wantOutcome += ", grade " + c.Expect.Grade
+		}
 		out = append(out, TestCaseResult{
-			Name: c.Name, Got: ev.Outcome, Want: c.Expect.Outcome, GotFailed: got, WantFailed: want,
-			Passed: ev.Outcome == c.Expect.Outcome && fmt.Sprint(got) == fmt.Sprint(want),
+			Name: c.Name, Got: gotOutcome, Want: wantOutcome, GotFailed: got, WantFailed: want,
+			Passed: ev.Outcome == c.Expect.Outcome && fmt.Sprint(got) == fmt.Sprint(want) && gradeOK,
 		})
 	}
 	return out, nil

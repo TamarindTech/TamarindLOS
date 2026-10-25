@@ -42,6 +42,26 @@ checks:
   - { type: credit_bureau, report: consumer, party: [director, guarantor], mandatory: false, consent: credit_bureau }
   - { type: bank_analysis, party: applicant, mandatory: true, consent: bank_data }
 
+# Risk grading: a points scorecard over the same variables as rules.yaml (CEL). Each
+# factor that holds adds its points; the grade is the highest band whose minimum the
+# total reaches, and the grade sets the APR (product.pricing.apr_bps_by_grade). A factor
+# whose data is missing scores nothing. Rules decide WHETHER to lend; the grade decides
+# the PRICE. Illustrative weights, not credit advice: country packs calibrate them.
+risk_grading:
+  version: 0.1.0
+  factors:
+    - { id: RG-01, group: dscr, points: 30, description: Debt service coverage of at least 1.75, when: "metrics.dscr >= 1.75" }
+    - { id: RG-02, group: dscr, points: 15, description: Debt service coverage from 1.40 to 1.75, when: "metrics.dscr >= 1.40 && metrics.dscr < 1.75" }
+    - { id: RG-03, points: 15, description: Trading for at least 3 years, when: "application.business.months_trading >= 36" }
+    - { id: RG-04, points: 15, description: Loan at most 15% of annual revenue, when: "double(application.requested_amount_minor) <= 0.15 * double(metrics.annual_revenue_minor)" }
+    - { id: RG-05, points: 10, description: Never overdrawn in the last 6 months, when: "metrics.negative_balance_days_6m == 0" }
+    - { id: RG-06, points: 20, description: Commercial bureau score of at least 700, when: "checks.bureau.score >= 700" }
+    - { id: RG-07, points: 10, description: At least 12 months of bank history, when: "metrics.bank_months >= 12" }
+  bands:
+    - { grade: A, min_points: 70 }
+    - { grade: B, min_points: 40 }
+    - { grade: C, min_points: 0 }
+
 rules: rules.yaml
 state_machine: state-machine.yaml
 authorization: authz.cedar

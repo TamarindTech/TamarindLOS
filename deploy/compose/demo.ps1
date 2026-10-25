@@ -242,6 +242,7 @@ foreach ($c in $app.checks) { Write-Host ("         {0,-14} {1}" -f $c.check_typ
 $script:Passed++
 Write-Host ("  [ok]   {0,-58} -> {1}" -f "the underwriting agent proposed a decision (L2)", $proposal.proposal.outcome) -ForegroundColor Green
 Write-Host ("         DSCR {0}; reason codes {1}" -f $app.metrics.dscr, ($proposal.proposal.reason_codes -join ", ")) -ForegroundColor DarkGray
+Write-Host ("         risk grade {0} ({1} of {2} points) -> priced at {3:N2}% APR" -f $app.risk_grade.grade, $app.risk_grade.points, $app.risk_grade.max_points, ($app.risk_grade.apr_bps / 100)) -ForegroundColor DarkGray
 ($proposal.proposal.narrative -split "`n") | Select-Object -First 3 | ForEach-Object { Write-Host ("         | {0}" -f $_) -ForegroundColor DarkGray }
 
 # Each of those agent actions is a recorded run, with every tool call it made.

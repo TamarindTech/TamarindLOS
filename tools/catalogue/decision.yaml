@@ -3,7 +3,8 @@ description: Policy evaluation, recommendations and credit decisions. Approve an
 tools:
   - name: policy.evaluate
     version: 0.1.0
-    summary: Evaluate the product's policy pack rules against the current application and return matched rules and reason codes.
+    summary: Evaluate the product's policy pack rules against the current application and return matched rules, reason codes and the risk grade.
+    description: Rules decide whether to lend. The pack's scorecard grades the risk (A, B, C...), and the grade sets the APR used for approving terms. The grade is provisional until every mandatory check has a result.
     risk_tier: read
     default_autonomy: L4
     mutates: false
@@ -27,6 +28,7 @@ tools:
   - name: decision.recommend
     version: 0.1.0
     summary: Produce a recommendation with terms, conditions, reason codes and a credit memo, stored as an immutable decision record.
+    description: Without a rate the terms are priced at the risk grade's APR. A person may set another rate with pricing_override_reason (never below the cheapest grade); agents always price at the grade. The grade and pricing are kept in the decision record.
     risk_tier: medium
     default_autonomy: L2
     max_autonomy: L3
@@ -54,6 +56,7 @@ tools:
         reason_codes: { type: array, items: { type: string }, minItems: 1 }
         narrative: { type: string, maxLength: 8000 }
         confidence: { type: number, minimum: 0, maximum: 1 }
+        pricing_override_reason: { type: string, maxLength: 500, description: "Required when terms.rate_apr_bps differs from the risk-grade price." }
         models:
           type: array
           description: "Models that contributed (scorecards, LLMs), recorded in the decision record. LLMs may draft the narrative; outcomes and reason codes come from policy rules."
@@ -89,6 +92,7 @@ tools:
         recommendation_id: { type: string, format: uuid }
         amended_terms: { type: object }
         note: { type: string, maxLength: 2000 }
+        pricing_override_reason: { type: string, maxLength: 500, description: "Required when amended_terms changes the rate away from the risk-grade price." }
     output: { type: object, properties: { decision_record_id: { type: string, format: uuid }, state: { type: string } } }
 
   - name: decision.decline

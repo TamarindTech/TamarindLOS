@@ -91,6 +91,12 @@ legal_name: Mekong Trading Co.
 
 A value ending in `?` is read with low confidence. A file containing the EICAR test string is rejected as malware. Files are stored on disk (`TAMARIND_BLOB_DIR`) behind a blob-store port meant for S3-compatible storage.
 
+### Risk grading and pricing
+
+Rules decide whether to lend; the pack's scorecard decides the price. `risk_grading` in `pack.yaml` lists CEL factors with points (debt service coverage, years trading, loan size against revenue, overdrafts, bureau score, bank history) and grade bands (A from 70 points, B from 40, C below). A factor whose data is missing scores nothing, so gaps never improve a grade. The grade maps to an APR through `product.pricing.apr_bps_by_grade`.
+
+`policy.evaluate` and `application.get` return the grade with each factor (provisional until every mandatory check has a result; borrowers do not see it). `decision.recommend` prices approving terms at the grade's APR when no rate is given. A person may set another rate with `pricing_override_reason`, never below the cheapest grade; agents always price at the grade, and an agent proposal with another rate is refused when a person approves it. The decision record keeps the grade, its factors, the price and any override (who, why, by how much), and lists the scorecard among the models used. Pack tests can assert a grade (`expect.grade` in `tests.yaml`).
+
 ### Tasks and agent runs
 
 People and agents share one work queue. A task is assigned to a principal or a role (`role:loan_officer`); `task.list` shows by default the open tasks assigned to you or to one of your roles, and only the assignee or the creator may complete one. Agents escalate by creating a task. `document.request` creates a task for the borrower (or the loan officers when there is no borrower login), keeps one open request per document and party, and the request closes itself when a document of that type is classified.
@@ -174,7 +180,7 @@ TAMARIND_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres
 
 The end-to-end tests create a throwaway database and check, among other things: schema validation, CEL preconditions, the pack's party rules, optimistic concurrency, idempotent replay, agent autonomy and approval requests, maker-checker, re-authorization of approved calls, tenant isolation, MCP `tools/list` filtering, audit-chain verification, tamper detection and that the application role cannot edit events.
 
-`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event. `TestTasksAndAgentRuns` covers runs (one open per agent and application, calls linked to the run, no borrowing another agent's run, closed runs refuse changes, stale runs), escalation tasks, who may list and complete tasks, and document requests that close when the document is classified.
+`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event. `TestLoanJourney` also checks the risk grade (A at 14%), that the borrower cannot see it, that an agent cannot price off-grade, and a recorded pricing override. `TestTasksAndAgentRuns` covers runs (one open per agent and application, calls linked to the run, no borrowing another agent's run, closed runs refuse changes, stale runs), escalation tasks, who may list and complete tasks, and document requests that close when the document is classified.
 
 ## Layout
 
@@ -196,6 +202,6 @@ migrations/           SQL migrations (embedded in the binary)
 - Minimal in-house MCP server ([ADR-0005](../../docs/adr/0005-mcp-server-phase-0.md)).
 - Classification and extraction are mocks; bank-statement months and financial-statement years are not yet checked against the pack minimums.
 - Connectors are mocks. Real adapters plug into the same ports.
-- Pricing uses the pack's reference rate; risk grading is not implemented yet.
+- The risk scorecard is an illustrative baseline; it is not calibrated on loss data.
 - No outbox relay yet: agents read events from the feed, but there are no outbound webhooks.
 - Task due dates are recorded but nothing chases overdue tasks yet.

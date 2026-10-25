@@ -72,7 +72,8 @@ class FakeClient:
 
 
 PASS = {"pack": "baseline/sme-working-capital", "pack_version": "0.1.0", "outcome": "pass",
-        "results": [{"rule_id": "ELG-01", "passed": True}], "failed": []}
+        "results": [{"rule_id": "ELG-01", "passed": True}], "failed": [],
+        "risk_grade": {"grade": "A", "points": 75, "max_points": 100, "apr_bps": 1400, "missing": []}}
 
 
 class VerificationTests(unittest.TestCase):
@@ -211,6 +212,8 @@ class UnderwritingTests(unittest.TestCase):
         self.assertEqual(args["reason_codes"], ["ALL_POLICY_RULES_PASSED"])
         self.assertEqual(args["models"][0]["kind"], "rules")
         self.assertIn("DSCR 1.53", args["narrative"])
+        self.assertIn("Risk grade: A (75 of 100 points), priced at 14.00% APR.", args["narrative"])
+        self.assertNotIn("terms", args)  # the gateway prices at the grade
         self.assertNotIn("Mekong", args["narrative"])
         self.assertEqual(key, "underwriting:evt-7:decision.recommend")
         self.assertIn("approval apr-1", out.detail)

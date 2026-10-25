@@ -71,6 +71,10 @@ class TemplateNarrator:
         if d.get("count"):
             lines.append(f"Documents: {d['count']} on file; {d.get('evidence_verified', 0)} extracted fields verified"
                          + (f", {d['evidence_for_review']} waiting for review." if d.get("evidence_for_review") else "."))
+        g = facts.get("risk_grade") or {}
+        if g.get("grade"):
+            lines.append(f"Risk grade: {g['grade']} ({g.get('points')} of {g.get('max_points')} points), priced at "
+                         f"{g.get('apr_bps', 0) / 100:.2f}% APR" + (f"; no data for {', '.join(g['missing'])}." if g.get("missing") else "."))
         if p.get("failed"):
             lines.append("Failed rules: " + ", ".join(f"{f['rule_id']} {f['reason_code']} ({f['outcome']})" for f in p["failed"]) + ".")
         lines.append({

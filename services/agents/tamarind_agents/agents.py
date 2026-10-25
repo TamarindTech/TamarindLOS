@@ -305,6 +305,8 @@ class UnderwritingAgent(Agent):
                 "evidence_verified": sum(1 for e in app.get("evidence") or [] if e.get("status") == "verified"),
                 "evidence_for_review": sum(1 for e in app.get("evidence") or [] if e.get("status") == "needs_review"),
             },
+            "risk_grade": {k: (policy.get("risk_grade") or {}).get(k) for k in ("grade", "points", "max_points", "apr_bps", "missing")}
+            if policy.get("risk_grade") else {},
             "policy": {"pack": policy.get("pack"), "version": policy.get("pack_version"), "outcome": policy["outcome"],
                        "rules_passed": sum(1 for r in results if r.get("passed")), "rules_total": len(results),
                        "failed": policy.get("failed") or []},
