@@ -78,7 +78,7 @@ jobs:
         run: |
           go build -o /tmp/tamarind ./cmd/tamarind
           TAMARIND_APP_DB_PASSWORD=ci-app-password /tmp/tamarind migrate --seed --database-url "$ADMIN_URL" $SPECS
-          /tmp/tamarind serve --addr 127.0.0.1:8080 --database-url "$APP_URL" $SPECS > /tmp/serve.log 2>&1 &
+          /tmp/tamarind serve --addr 127.0.0.1:8080 --database-url "$APP_URL" --intake-grace 2s --timer-interval 1s $SPECS > /tmp/serve.log 2>&1 &
           for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
           cd ../agents
           TAMARIND_URL=http://127.0.0.1:8080 python -m unittest tests.test_live -v || { cat /tmp/serve.log; exit 1; }
