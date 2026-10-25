@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/catalogue"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/yamlx"
@@ -118,6 +119,7 @@ type Pack struct {
 	Autonomy          map[string]string     `json:"autonomy"`
 	ApprovalAuthority []Authority           `json:"approval_authority"`
 	RiskGrading       *RiskGrading          `json:"risk_grading"`
+	Intake            IntakeSettings        `json:"intake"`
 	Evidence          struct {
 		// Agents may mark evidence verified only at or above this extraction confidence.
 		MinConfidenceAutoVerify float64 `json:"min_confidence_auto_verify"`
@@ -333,4 +335,47 @@ func (sm StateMachine) SystemTransitions(from string) []SMTransition {
 		}
 	}
 	return out
+}
+
+// IntakeSettings times document collection (pack.yaml intake).
+type IntakeSettings struct {
+	// RequestDocumentsAfterMinutes gives the borrower time to upload before the intake
+	// agent asks for what is missing.
+	RequestDocumentsAfterMinutes int `json:"request_documents_after_minutes"`
+	// DocumentDueDays is when a document request falls due.
+	DocumentDueDays int `json:"document_due_days"`
+	// ReminderIntervalDays moves the due date on after each reminder.
+	ReminderIntervalDays int `json:"reminder_interval_days"`
+	// MaxReminders is how many reminders a request gets before a person takes over.
+	MaxReminders int `json:"max_reminders"`
+}
+
+// Grace is how long after submission the intake agent waits before asking.
+func (s IntakeSettings) Grace() time.Duration {
+	return time.Duration(s.RequestDocumentsAfterMinutes) * time.Minute
+}
+
+// DueAfter is how long a new document request has.
+func (s IntakeSettings) DueAfter() time.Duration {
+	return days(s.DocumentDueDays, 7)
+}
+
+// ReminderInterval is how far each reminder moves the due date.
+func (s IntakeSettings) ReminderInterval() time.Duration {
+	return days(s.ReminderIntervalDays, 3)
+}
+
+// ReminderLimit is the number of reminders before escalation.
+func (s IntakeSettings) ReminderLimit() int {
+	if s.MaxReminders <= 0 {
+		return 2
+	}
+	return s.MaxReminders
+}
+
+func days(n, fallback int) time.Duration {
+	if n <= 0 {
+		n = fallback
+	}
+	return time.Duration(n) * 24 * time.Hour
 }

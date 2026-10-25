@@ -217,22 +217,34 @@ class DocumentAgent(Agent):
 
 
 class IntakeAgent(Agent):
-    """Asks for whatever the application still lacks once it is submitted.
+    """Collects missing documents: asks once the grace period is over, then chases.
 
+    The gateway's scheduler wakes it with IntakeReviewDue some minutes after submission
+    (most borrowers upload straight away, so it does not ask too early) and with
+    TaskOverdue when a document request passes its due date. It reminds the borrower
+    until the pack's reminder limit, then hands the request to the loan officers.
     Requests go to the borrower's portal (or to the loan officers when there is no
-    borrower login). The gateway keeps one open request per document and party, and
+    borrower login); the gateway keeps one open request per document and party, and
     the request closes itself when a document of that type is classified.
     """
 
     name = "intake"
     principal = "agent:intake"
+    event_types = ("IntakeReviewDue", "TaskOverdue")
 
     def wants(self, event: dict[str, Any]) -> bool:
-        return self.entered(event, "intake")
+        if event.get("type") == "IntakeReviewDue":
+            return True
+        return event.get("type") == "TaskOverdue" and (event.get("data") or {}).get("kind") == "document_request"
 
     def handle(self, event: dict[str, Any], client: Client) -> Outcome:
+        if event.get("type") == "TaskOverdue":
+            return self.chase(event, client)
+        return self.request_missing(event, client)
+
+    def request_missing(self, event: dict[str, Any], client: Client) -> Outcome:
         app_id = event["aggregate_id"]
-        app = self.snapshot(client, app_id, "intake: read application after submission")
+        app = self.snapshot(client, app_id, "intake: read application after the grace period")
         if app is None:
             return Outcome("escalated", "application not readable")
         if app["state"] != "intake":
@@ -257,6 +269,25 @@ class IntakeAgent(Agent):
         if failed:
             return Outcome("escalated", out.detail + f"; {len(failed)} request(s) failed", out.calls)
         return out
+
+    def chase(self, event: dict[str, Any], client: Client) -> Outcome:
+        data = event.get("data") or {}
+        task_id, details = data["task_id"], data.get("details") or {}
+        doc = str(details.get("document_type", "document")).replace("_", " ")
+        if data.get("reminders_left", 0) > 0:
+            r = client.call("task.remind", {"task_id": task_id, "message": f"A reminder: please upload the {doc}."},
+                            reason=f"intake: the {doc} request is overdue", key=self.key(event, "remind"))
+            call = {"tool": "task.remind", "task_id": task_id, "status": r.status, "error": r.error_code,
+                    "reminders": r.result.get("reminders")}
+            if r.ok:
+                return Outcome("acted", f"reminded about the {doc} ({r.result.get('reminders_left')} reminder(s) left)", [call])
+            if r.error_code == "STATE_CONFLICT" and "already" in r.error_message:
+                return Outcome("skipped", "the request is no longer open", [call])
+            # Otherwise (reminder limit reached, or the reminder failed) a person takes over.
+        reminders = data.get("reminders", 0)
+        return Outcome("escalated", f"the {doc} is still missing after {reminders} reminder(s)",
+                       task={"kind": "collect_document", "title": f"Borrower has not provided the {doc} after {reminders} reminder(s)",
+                             "details": {"document_request_task_id": task_id, **details}})
 
 
 # --- Underwriting analyst ----------------------------------------------------------

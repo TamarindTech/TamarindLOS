@@ -1,14 +1,16 @@
 """End-to-end: the agents against a running gateway.
 
 Skipped unless TAMARIND_URL points at a server started with the development
-principals, for example:
+principals and a short intake grace period, for example:
 
+    tamarind serve ... --intake-grace 2s --timer-interval 1s
     TAMARIND_URL=http://localhost:8080 python -m unittest discover -s tests
 """
 
 import json
 import os
 import tempfile
+import time
 import unittest
 import urllib.request
 import uuid
@@ -94,6 +96,17 @@ class LiveAgentsTest(unittest.TestCase):
                              (VerificationAgent(), "dev-agent-verification"), (UnderwritingAgent(), "dev-agent-underwriting")]:
             Worker(agent, TamarindClient(URL, token), Path(self.state.name)).drain()
 
+    def wait_for_intake_review(self, app, timeout=20):
+        """The scheduler announces IntakeReviewDue once the grace period is over."""
+        feed = TamarindClient(URL, "dev-officer-ana")
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            events = feed.events(0, types=["IntakeReviewDue"], limit=500)["events"]
+            if any(e["aggregate_id"] == app for e in events):
+                return
+            time.sleep(0.5)
+        self.fail("no IntakeReviewDue: start the gateway with --intake-grace 2s --timer-interval 1s")
+
     def get(self, app):
         return rest("dev-officer-ana", "application.get", {"application_id": app})["result"]["application"]
 
@@ -118,6 +131,7 @@ class LiveAgentsTest(unittest.TestCase):
         thin = new_application("Thin Margin THIN Ltd")
         sanctioned = new_application("Blocked SANCTION Imports")
         late = new_application("Late Papers Co.", omit=("bank_statements",))
+        self.wait_for_intake_review(late)
         self.run_agents()
 
         app = self.get(healthy)

@@ -71,7 +71,7 @@ Responses always have the same shape: `status` (`ok`, `approval_required` or `er
 | Verification | `kyc.run` (KYC for people, KYB for businesses), `sanctions.screen`, `credit.pull_report`, `bank.analyse_statements` |
 | Decision | `policy.evaluate`, `decision.recommend`, `decision.approve`, `decision.decline` |
 | Offer and booking | `offer.generate`, `offer.send`, `offer.accept`, `loan.handoff` |
-| Work | `task.list`, `task.create`, `task.complete` (the shared work queue), `approval.list` (the approval queue, with the proposal and whether you may decide), `approval.respond` |
+| Work | `task.list`, `task.create`, `task.complete`, `task.remind` (the shared work queue), `approval.list` (the approval queue, with the proposal and whether you may decide), `approval.respond` |
 | Agents | `agent.run_start`, `agent.run_finish`, `agent.run_list` (what each agent did, call by call) |
 
 `application.update`, `party.update` and `decision.refer` return `NOT_IMPLEMENTED` for now.
@@ -90,6 +90,15 @@ legal_name: Mekong Trading Co.
 ```
 
 A value ending in `?` is read with low confidence. A file containing the EICAR test string is rejected as malware. Files are stored on disk (`TAMARIND_BLOB_DIR`) behind a blob-store port meant for S3-compatible storage.
+
+### Time-based events
+
+Agents are woken by events, so the gateway turns time into events too. A scheduler in `serve` (every `--timer-interval`, default 30s; one replica at a time via an advisory lock) emits:
+
+- `IntakeReviewDue` once the pack's grace period after submission is over (`intake.request_documents_after_minutes`, 10 minutes) and the application is still in intake. The intake agent asks for missing documents then, not the moment the borrower submits.
+- `TaskOverdue` when an open task passes its due date, once per due date. Document requests fall due after `intake.document_due_days` (7). `task.remind` notifies the assignee (the borrower in the portal) and moves the due date on by `intake.reminder_interval_days` (3); after `intake.max_reminders` (2) it refuses, and the intake agent hands the request to the loan officers.
+
+For tests and demos, `--intake-grace 2s` (or `TAMARIND_INTAKE_GRACE`) overrides the pack's grace period.
 
 ### Risk grading and pricing
 
@@ -180,7 +189,7 @@ TAMARIND_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres
 
 The end-to-end tests create a throwaway database and check, among other things: schema validation, CEL preconditions, the pack's party rules, optimistic concurrency, idempotent replay, agent autonomy and approval requests, maker-checker, re-authorization of approved calls, tenant isolation, MCP `tools/list` filtering, audit-chain verification, tamper detection and that the application role cannot edit events.
 
-`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event. `TestLoanJourney` also checks the risk grade (A at 14%), that the borrower cannot see it, that an agent cannot price off-grade, and a recorded pricing override. `TestTasksAndAgentRuns` covers runs (one open per agent and application, calls linked to the run, no borrowing another agent's run, closed runs refuse changes, stale runs), escalation tasks, who may list and complete tasks, and document requests that close when the document is classified.
+`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event. `TestLoanJourney` also checks the risk grade (A at 14%), that the borrower cannot see it, that an agent cannot price off-grade, and a recorded pricing override. `TestTimers` moves the gateway's clock to check the grace period, overdue reporting, reminders and the reminder limit. `TestTasksAndAgentRuns` covers runs (one open per agent and application, calls linked to the run, no borrowing another agent's run, closed runs refuse changes, stale runs), escalation tasks, who may list and complete tasks, and document requests that close when the document is classified.
 
 ## Layout
 
@@ -204,4 +213,4 @@ migrations/           SQL migrations (embedded in the binary)
 - Connectors are mocks. Real adapters plug into the same ports.
 - The risk scorecard is an illustrative baseline; it is not calibrated on loss data.
 - No outbox relay yet: agents read events from the feed, but there are no outbound webhooks.
-- Task due dates are recorded but nothing chases overdue tasks yet.
+- Only document requests are chased automatically; other overdue tasks raise `TaskOverdue` but no agent acts on them yet.

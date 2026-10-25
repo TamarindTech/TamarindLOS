@@ -34,6 +34,16 @@ documents:
   - { type: proof_of_address, party: applicant, required: true }
   - { type: tax_return, party: applicant, required: false }
 
+# Document collection timing. The intake agent asks for missing documents only after
+# the grace period (most borrowers upload straight after submitting), reminds the
+# borrower when a request falls due, and hands the case to a person after the last
+# reminder.
+intake:
+  request_documents_after_minutes: 10
+  document_due_days: 7
+  reminder_interval_days: 3
+  max_reminders: 2
+
 checks:
   - { type: kyb, party: applicant, mandatory: true, consent: kyc }
   - { type: kyc, party: [director, beneficial_owner, guarantor], mandatory: true, consent: kyc }
@@ -72,6 +82,7 @@ autonomy:
   application.create: L3
   application.submit: L3
   document.request: L3
+  task.remind: L3
   document.classify: L3
   document.extract: L3
   evidence.verify: L3

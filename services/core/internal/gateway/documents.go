@@ -376,7 +376,7 @@ func (g *Gateway) documentRequest(ctx context.Context, tx pgx.Tx, c *call) (any,
 	if _, err := tx.Exec(ctx, `INSERT INTO tasks (id, tenant_id, application_id, kind, title, details, assignee, created_by, due_at, agent_run_id)
 		VALUES ($1,$2,$3,'document_request',$4,$5,$6,$7,$8,$9)`, taskID, c.tenantID, c.app.ID,
 		fmt.Sprintf("Provide %s for %s", strings.ReplaceAll(docType, "_", " "), p.LegalName), details, assignee, c.p.ID,
-		g.Now().Add(7*24*time.Hour), runRef(c)); err != nil {
+		g.Now().Add(g.Pack.Intake.DueAfter()), runRef(c)); err != nil {
 		return nil, err
 	}
 	via := "task"

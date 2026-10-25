@@ -31,6 +31,7 @@ var actionGroups = map[string]string{
 	"document.request":     "intake",
 	"task.create":          "intake",
 	"task.complete":        "intake",
+	"task.remind":          "intake",
 
 	"kyc.run":                 "verify",
 	"sanctions.screen":        "verify",

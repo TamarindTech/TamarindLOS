@@ -57,7 +57,7 @@ erDiagram
 | `checks` | KYC, KYB, sanctions, bureau, bank analysis, fraud | Links to the consent used |
 | `decision_records` | Recommendations and decisions | Append-only; `based_on` links a decision to its recommendation |
 | `offers` | Offers made to applicants | Amount, term, APR in basis points, schedule summary, disclosures, acceptance evidence |
-| `tasks` | Work queue for humans and agents | Assignee is a principal or `role:…`; `agent_run_id` when an agent created it |
+| `tasks` | Work queue for humans and agents | Assignee is a principal or `role:…`; `agent_run_id` when an agent created it; `reminders`, `last_reminded_at` and `overdue_notified_at` for chasing |
 | `approval_requests` | Gated tool calls awaiting a human | Stores the original tool input; maker-checker constraint |
 | `tool_invocations` | Gateway audit of every call | Unique idempotency key per actor and tool |
 | `agent_runs` | Each agent execution | Trigger event, status, steps, tokens, cost, summary and the escalation task; at most one running run per agent per application. Each tool call in a run carries `tool_invocations.agent_run_id` |

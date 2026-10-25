@@ -196,6 +196,8 @@ func cmdServe(ctx context.Context, args []string, log *slog.Logger) error {
 	addr := fs.String("addr", env("TAMARIND_ADDR", ":8080"), "listen address")
 	dsn := fs.String("database-url", env("TAMARIND_DATABASE_URL", ""), "application connection string (tamarind_app role)")
 	blobDir := fs.String("blob-dir", env("TAMARIND_BLOB_DIR", ".tamarind-blobs"), "directory for uploaded documents")
+	timerEvery := fs.Duration("timer-interval", envDuration("TAMARIND_TIMER_INTERVAL", 30*time.Second), "how often time-based events (intake review, overdue tasks) are checked")
+	intakeGrace := fs.String("intake-grace", env("TAMARIND_INTAKE_GRACE", ""), "override the pack's wait before the intake agent asks for documents (e.g. 2s for tests)")
 	_ = fs.Parse(args)
 	if *dsn == "" {
 		return errors.New("--database-url (or TAMARIND_DATABASE_URL) is required")
@@ -218,7 +220,18 @@ func cmdServe(ctx context.Context, args []string, log *slog.Logger) error {
 		return err
 	}
 	g.Connectors.Blobs = connectors.FSBlobStore{Dir: *blobDir}
-	go g.Listen(ctx) // wakes event-feed subscribers
+	if *intakeGrace != "" {
+		d, err := time.ParseDuration(*intakeGrace)
+		if err != nil {
+			return fmt.Errorf("--intake-grace: %w", err)
+		}
+		g.IntakeGrace = d
+	}
+	// Background work stops when serving stops, whatever the reason.
+	ctx, stop := context.WithCancel(ctx)
+	defer stop()
+	go g.Listen(ctx)                 // wakes event-feed subscribers
+	go g.RunTimers(ctx, *timerEvery) // intake review and overdue tasks
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{G: g, Log: log}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
@@ -257,4 +270,13 @@ func cmdVerifyAudit(ctx context.Context, args []string) error {
 		return errors.New("audit chain is broken")
 	}
 	return nil
+}
+
+func envDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
 }

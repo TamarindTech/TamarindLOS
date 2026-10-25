@@ -38,6 +38,10 @@ type Gateway struct {
 	// them before serving to use real providers.
 	Connectors connectors.Set
 
+	// IntakeGrace is how long after submission the scheduler waits before announcing
+	// IntakeReviewDue (the pack's intake.request_documents_after_minutes by default).
+	IntakeGrace time.Duration
+
 	tenantIDs map[string]string // slug -> uuid
 	feed      hub
 	handlers  map[string]handler
@@ -45,7 +49,8 @@ type Gateway struct {
 
 // New builds a gateway and resolves tenant ids from the database.
 func New(ctx context.Context, cat *catalogue.Catalogue, pack *policy.Pack, reg *auth.Registry, db *pgxpool.Pool, log *slog.Logger) (*Gateway, error) {
-	g := &Gateway{Catalogue: cat, Pack: pack, Registry: reg, DB: db, Log: log, Now: time.Now, tenantIDs: map[string]string{}}
+	g := &Gateway{Catalogue: cat, Pack: pack, Registry: reg, DB: db, Log: log, Now: time.Now, tenantIDs: map[string]string{},
+		IntakeGrace: pack.Intake.Grace()}
 	g.handlers = g.registerHandlers()
 	g.Connectors = connectors.Mocks(func() time.Time { return g.Now() }, filepath.Join(os.TempDir(), "tamarind-blobs"))
 	for slug := range reg.Tenants {

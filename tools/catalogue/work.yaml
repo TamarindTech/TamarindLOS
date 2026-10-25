@@ -44,6 +44,31 @@ tools:
         outcome: { type: object }
     output: { type: object, properties: { status: { type: string } } }
 
+  - name: task.remind
+    version: 0.1.0
+    summary: Remind the assignee of an open task (the borrower is notified in the portal) and move its due date on.
+    description: A task gets at most the pack's intake.max_reminders reminders; after that the call fails with STATE_CONFLICT and a person should take over. The scheduler emits TaskOverdue when a task passes its due date.
+    risk_tier: low
+    default_autonomy: L3
+    mutates: true
+    idempotent: true
+    scopes: [tasks:write]
+    emits: [TaskReminded]
+    errors: [NOT_FOUND, STATE_CONFLICT]
+    input:
+      type: object
+      required: [task_id]
+      properties:
+        task_id: { type: string, format: uuid }
+        message: { type: string, maxLength: 500 }
+    output:
+      type: object
+      properties:
+        reminders: { type: integer }
+        reminders_left: { type: integer }
+        due_at: { type: string, format: date-time }
+        notified_via: { type: string }
+
   - name: task.list
     version: 0.1.0
     summary: List tasks. By default, open tasks assigned to you or to one of your roles.

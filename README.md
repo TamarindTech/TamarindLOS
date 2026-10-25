@@ -81,7 +81,7 @@ Compose starts PostgreSQL, the core service and the agent runtime. On Windows, `
 | Phase | Outcome | Status |
 |---|---|---|
 | **Design** | Concept, reference architecture, core decisions, specifications | Done |
-| **0 — Foundations** | Tool gateway, domain core, state machine, audit ledger, REST + MCP adapters, mock connectors | In progress: gateway, REST + MCP, audit ledger, CI, mock connectors, the full intake-to-booking journey, event feed, the Python agent runtime, the document pipeline (upload, scan, classify, extract, verify), the shared task queue, recorded agent runs with escalation, and risk grading with grade-based pricing done; reminders, outbound webhooks and an officer console next |
+| **0 — Foundations** | Tool gateway, domain core, state machine, audit ledger, REST + MCP adapters, mock connectors | In progress: gateway, REST + MCP, audit ledger, CI, mock connectors, the full intake-to-booking journey, event feed, the Python agent runtime, the document pipeline (upload, scan, classify, extract, verify), the shared task queue, recorded agent runs with escalation, risk grading with grade-based pricing, and time-based events (intake grace period, overdue reminders) done; outbound webhooks and an officer console next |
 | **1 — Assisted origination** | Officer console, document pipeline, intake and document agents, decision records | Planned |
 | **2 — Supervised automation** | Verification agent, policy packs, approval gates, evaluation harness, Fineract hand-off | Planned |
 | **3 — Ecosystem** | Borrower portal, external agent access, more connectors and jurisdiction packs | Planned |

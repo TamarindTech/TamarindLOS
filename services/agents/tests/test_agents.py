@@ -177,29 +177,62 @@ class DocumentTests(unittest.TestCase):
         self.assertEqual((out.action, out.task), ("acted", None))
 
 
+def review() -> dict:
+    return {"seq": 5, "event_id": "evt-5", "type": "IntakeReviewDue", "aggregate_id": APP, "data": {}}
+
+
+def overdue(left: int, reminders: int = 0) -> dict:
+    return {"seq": 6, "event_id": "evt-6", "type": "TaskOverdue", "aggregate_id": APP,
+            "data": {"task_id": "req-1", "kind": "document_request", "reminders": reminders, "reminders_left": left,
+                     "details": {"document_type": "bank_statements", "party_id": BIZ}}}
+
+
 class IntakeTests(unittest.TestCase):
     def test_requests_each_missing_document_once(self):
         app = application("intake", missing_document_items=[
             {"document_type": "bank_statements", "party_id": BIZ, "party_role": "applicant"},
             {"document_type": "identity_document", "party_id": DIR, "party_role": "director"}])
         c = FakeClient(app)
-        out = IntakeAgent().handle(event("intake"), c)
+        out = IntakeAgent().handle(review(), c)
         reqs = [(a["party_id"], a["document_type"], k) for t, a, _, k in c.calls if t == "document.request"]
-        self.assertEqual(reqs, [(BIZ, "bank_statements", f"intake:evt-7:request:{BIZ}:bank_statements"),
-                                (DIR, "identity_document", f"intake:evt-7:request:{DIR}:identity_document")])
+        self.assertEqual(reqs, [(BIZ, "bank_statements", f"intake:evt-5:request:{BIZ}:bank_statements"),
+                                (DIR, "identity_document", f"intake:evt-5:request:{DIR}:identity_document")])
         self.assertEqual(out.detail, "requested 2 document(s)")
 
     def test_uploaded_but_unclassified_documents_are_not_requested(self):
         app = application("intake", missing_document_items=[
             {"document_type": "bank_statements", "party_id": BIZ, "party_role": "applicant"}],
             documents=[{"document_id": "d1", "party_id": BIZ, "declared_type": "bank_statements", "status": "received"}])
-        out = IntakeAgent().handle(event("intake"), FakeClient(app))
+        out = IntakeAgent().handle(review(), FakeClient(app))
         self.assertEqual(out.action, "skipped")
 
     def test_nothing_missing_or_moved_on(self):
-        self.assertEqual(IntakeAgent().handle(event("intake"), FakeClient(application("intake"))).action, "skipped")
-        self.assertEqual(IntakeAgent().handle(event("intake"), FakeClient(application("verification"))).action, "skipped")
-        self.assertFalse(IntakeAgent().wants(event("verification")))
+        self.assertEqual(IntakeAgent().handle(review(), FakeClient(application("intake"))).action, "skipped")
+        self.assertEqual(IntakeAgent().handle(review(), FakeClient(application("verification"))).action, "skipped")
+
+    def test_waits_for_the_grace_period_not_submission(self):
+        a = IntakeAgent()
+        self.assertTrue(a.wants(review()))
+        self.assertFalse(a.wants(event("intake")))
+        self.assertTrue(a.wants(overdue(1)))
+        self.assertFalse(a.wants({**overdue(1), "data": {"kind": "review_evidence"}}))
+
+    def test_overdue_request_is_reminded(self):
+        c = FakeClient(application("intake"))
+        out = IntakeAgent().handle(overdue(1), c)
+        tool, args, _, key = c.calls[-1]
+        self.assertEqual((tool, args["task_id"], key), ("task.remind", "req-1", "intake:evt-6:remind"))
+        self.assertIn("bank statements", args["message"])
+        self.assertEqual(out.action, "acted")
+
+    def test_after_the_last_reminder_a_person_takes_over(self):
+        c = FakeClient(application("intake"))
+        out = IntakeAgent().handle(overdue(0, reminders=2), c)
+        self.assertEqual([t for t, *_ in c.calls], [])
+        self.assertEqual(out.action, "escalated")
+        self.assertEqual(out.task["kind"], "collect_document")
+        self.assertIn("after 2 reminder(s)", out.task["title"])
+        self.assertEqual(out.task["details"]["document_request_task_id"], "req-1")
 
 
 class UnderwritingTests(unittest.TestCase):

@@ -50,6 +50,7 @@ func (g *Gateway) registerHandlers() map[string]handler {
 		"task.create":              g.taskCreate,
 		"task.complete":            g.taskComplete,
 		"task.list":                g.taskList,
+		"task.remind":              g.taskRemind,
 		"agent.run_start":          g.agentRunStart,
 		"agent.run_finish":         g.agentRunFinish,
 		"agent.run_list":           g.agentRunList,

@@ -3,6 +3,7 @@ package api_test
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // TestTasksAndAgentRuns: agent runs link every call an agent makes, agents escalate with
@@ -147,4 +148,77 @@ func TestTasksAndAgentRuns(t *testing.T) {
 	if got := r.Result["runs"].([]any)[0].(map[string]any); got["status"] != "failed" {
 		t.Errorf("stale run: %+v", got)
 	}
+}
+
+// TestTimers: the scheduler turns time into events. The intake grace period ends with
+// IntakeReviewDue; an overdue request is reported once per due date, task.remind moves
+// the due date on, and the reminder limit hands the task to a person.
+func TestTimers(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	start := time.Now()
+	at := func(d time.Duration) { e.g.Now = func() time.Time { return start.Add(d) } }
+	defer func() { e.g.Now = time.Now }()
+	tick := func(want int) {
+		t.Helper()
+		n, err := e.g.Tick(ctx)
+		if err != nil || n != want {
+			t.Fatalf("tick: %d events, %v (want %d)", n, err, want)
+		}
+	}
+	events := func(appID, typ string) int {
+		var n int
+		if err := e.withTenant(ctx, func(q querier) error {
+			return q.QueryRow(ctx, `SELECT count(*) FROM events WHERE aggregate_id = $1 AND type = $2`, appID, typ).Scan(&n)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	r := e.call(officer, "application.create", map[string]any{"product_code": "SME-WC", "requested_amount_minor": 1500000,
+		"currency": "USD", "requested_term_months": 12, "borrower": "borrower:mekong"}, nil)
+	appID := r.Result["application_id"].(string)
+	applicant := e.call(officer, "party.add", map[string]any{"application_id": appID, "kind": "business", "role": "applicant",
+		"legal_name": "Mekong Trading Co.", "registration_number": "0105561234567", "country": "TH"}, nil).Result["party_id"].(string)
+	e.call(officer, "party.add", map[string]any{"application_id": appID, "kind": "individual", "role": "director",
+		"legal_name": "Somchai P.", "date_of_birth": "1980-04-02"}, nil)
+	expect(t, e.call(officer, "application.submit", map[string]any{"application_id": appID}, nil), "ok", "")
+
+	// --- Intake grace period (pack: 10 minutes). ---
+	at(time.Minute)
+	tick(0)
+	at(11 * time.Minute)
+	tick(1)
+	tick(0)
+	if events(appID, "IntakeReviewDue") != 1 {
+		t.Fatal("IntakeReviewDue not emitted once")
+	}
+
+	// --- A document request falls due (pack: 7 days), is reminded twice, then escalates. ---
+	why := map[string]any{"reason": "intake: bank statements missing"}
+	r = e.call(agent, "document.request", map[string]any{"application_id": appID, "party_id": applicant,
+		"document_type": "bank_statements"}, why)
+	expect(t, r, "ok", "")
+	taskID := r.Result["task_id"].(string)
+	at(6 * 24 * time.Hour)
+	tick(0)
+	at(8 * 24 * time.Hour)
+	tick(1)
+	tick(0) // reported once per due date
+	r = e.call(agent, "task.remind", map[string]any{"task_id": taskID, "message": "A reminder to upload your bank statements."}, why)
+	expect(t, r, "ok", "")
+	if r.Result["notified_via"] != "portal" || r.Result["reminders"] != float64(1) || r.Result["reminders_left"] != float64(1) {
+		t.Fatalf("first reminder: %+v", r.Result)
+	}
+	tick(0) // the due date moved on 3 days
+	at(12 * 24 * time.Hour)
+	tick(1)
+	expect(t, e.call(agent, "task.remind", map[string]any{"task_id": taskID}, why), "ok", "")
+	expect(t, e.call(agent, "task.remind", map[string]any{"task_id": taskID}, why), "error", "STATE_CONFLICT")
+	if events(appID, "TaskOverdue") != 2 || events(appID, "TaskReminded") != 2 {
+		t.Errorf("events: overdue %d, reminded %d", events(appID, "TaskOverdue"), events(appID, "TaskReminded"))
+	}
+	// A borrower cannot send reminders.
+	expect(t, e.call(borrower, "task.remind", map[string]any{"task_id": taskID}, nil), "error", "POLICY_DENIED")
 }

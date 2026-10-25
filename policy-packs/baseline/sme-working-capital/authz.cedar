@@ -11,7 +11,7 @@
 // Action groups (supplied as action entity parents):
 //   "read"      application.get, application.next_actions, policy.evaluate, approval.list,
 //               task.list, agent.run_list
-//   "intake"    application.create/update/submit, party.add/update, document.*, task.create/complete
+//   "intake"    application.create/update/submit, party.add/update, document.*, task.create/complete/remind
 //   "verify"    kyc.run, sanctions.screen, credit.pull_report, bank.analyse_statements, evidence.verify
 //   "recommend" decision.recommend, decision.refer
 //   "offer"     offer.generate, offer.send

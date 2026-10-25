@@ -8,7 +8,7 @@ Tamarind's built-in agents, in Python ([ADR-0001](../../docs/adr/0001-core-langu
 
 | Agent | Wakes when | Does | Autonomy |
 |---|---|---|---|
-| `intake` (`agent:intake`) | An application enters `intake` (it was submitted) | Asks for each required document that is missing and not already uploaded (`document.request`). The borrower is notified in the portal; the request closes itself when the document is classified | L3 |
+| `intake` (`agent:intake`) | The intake grace period after submission ends (`IntakeReviewDue`), or a document request is overdue (`TaskOverdue`) | Asks for each required document that is missing and not already uploaded (`document.request`); the borrower is notified in the portal and the request closes itself when the document is classified. Reminds the borrower when a request is overdue (`task.remind`) and, after the last reminder, hands it to the loan officers | L3 |
 | `documents` (`agent:documents`) | A document is attached (`DocumentAttached`) | Classifies and extracts it, then checks each field: verified when read confidently and consistent with the application (name, registration number, date of birth), otherwise needs_review. Fields for review and unrecognised documents become a task for the loan officers | L3; the gateway refuses verification below the confidence threshold |
 | `verification` (`agent:verification`) | An application enters `verification` (intake is complete) | Runs KYB, KYC, sanctions, the commercial bureau report and bank-data analysis for each party, skipping checks already done; a consumer report only where the person consented. Results that need review become a task | L3: acts on its own |
 | `underwriting` (`agent:underwriting`) | An application enters `underwriting` (all mandatory checks clear) | Runs `policy.evaluate`, then proposes `decision.recommend` with the policy outcome, reason codes and a credit memo that states the risk grade; the gateway prices the terms at the grade | L2: a person must approve the proposal |
@@ -71,13 +71,12 @@ Without a provider, or if the model call fails, the agent writes a deterministic
 
 ```bash
 python -m unittest discover -s tests -v                                # playbooks against a fake gateway
-TAMARIND_URL=http://localhost:8080 python -m unittest tests.test_live  # against a running gateway
+TAMARIND_URL=http://localhost:8080 python -m unittest tests.test_live  # against a gateway started with --intake-grace 2s --timer-interval 1s
 ```
 
 The live test creates four applications (healthy, thin cash flow, sanctions hit, one missing its bank statements), uploads their documents as the borrower, runs the four agents and checks the results: an approval proposal, a referral with `FREQUENT_OVERDRAFT`, a referred case with no proposal, a recorded run for every agent action, a review task for the low-confidence address, and a document request that the borrower answers and that closes itself before the case moves on. A person then confirms the healthy proposal. CI runs both.
 
 ## Next
 
-- Reminders: chase document requests that pass their due date.
 - Token usage and cost in runs when a model drafts the memo (the runtime records zero today).
 - The official MCP Python SDK when the gateway moves to it ([ADR-0005](../../docs/adr/0005-mcp-server-phase-0.md)).

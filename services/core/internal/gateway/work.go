@@ -23,7 +23,7 @@ const staleRunAfter = 10 * time.Minute
 // noSnapshot lists mutating tools that do not change the application itself, so the
 // gateway does not recompute its snapshot or run automatic transitions after them.
 var noSnapshot = map[string]bool{
-	"approval.respond": true, "task.create": true, "task.complete": true,
+	"approval.respond": true, "task.create": true, "task.complete": true, "task.remind": true,
 	"agent.run_start": true, "agent.run_finish": true,
 }
 
@@ -118,18 +118,33 @@ func (g *Gateway) taskCreate(ctx context.Context, tx pgx.Tx, c *call) (any, erro
 		id, c.tenantID, appID, str(c.input, "kind"), str(c.input, "title"), detailsJSON, assignee, c.p.ID, due, c.env.RunID); err != nil {
 		return nil, err
 	}
-	g.taskEvent(c, "TaskCreated", id, 1, map[string]any{"task_id": id, "kind": str(c.input, "kind"), "assignee": assignee,
-		"title": str(c.input, "title")})
+	if err := g.taskEvent(ctx, tx, c, "TaskCreated", id, map[string]any{"task_id": id, "kind": str(c.input, "kind"),
+		"assignee": assignee, "title": str(c.input, "title")}); err != nil {
+		return nil, err
+	}
 	return map[string]any{"task_id": id, "assignee": assignee}, nil
 }
 
 // taskEvent records a task event on its application, or on the task when it has none.
-func (g *Gateway) taskEvent(c *call, typ, taskID string, version int, data map[string]any) {
+func (g *Gateway) taskEvent(ctx context.Context, tx pgx.Tx, c *call, typ, taskID string, data map[string]any) error {
 	if c.app != nil {
 		c.addEvent(typ, data)
-		return
+		return nil
 	}
-	c.events = append(c.events, Event{Type: typ, Data: data, AggregateType: "task", AggregateID: taskID, AggregateVersion: version})
+	v, err := nextVersion(ctx, tx, "task", taskID)
+	if err != nil {
+		return err
+	}
+	c.events = append(c.events, Event{Type: typ, Data: data, AggregateType: "task", AggregateID: taskID, AggregateVersion: v})
+	return nil
+}
+
+// nextVersion is the next event version of an aggregate other than an application.
+func nextVersion(ctx context.Context, tx pgx.Tx, aggregateType, id string) (int, error) {
+	var v int
+	err := tx.QueryRow(ctx, `SELECT COALESCE(max(aggregate_version), 0) + 1 FROM events
+		WHERE aggregate_type = $1 AND aggregate_id = $2`, aggregateType, id).Scan(&v)
+	return v, err
 }
 
 func (g *Gateway) taskComplete(ctx context.Context, tx pgx.Tx, c *call) (any, error) {
@@ -155,7 +170,9 @@ func (g *Gateway) taskComplete(ctx context.Context, tx pgx.Tx, c *call) (any, er
 		outcome = NULLIF($4::text, 'null')::jsonb WHERE id = $1`, id, to, c.p.ID, string(outcome)); err != nil {
 		return nil, err
 	}
-	g.taskEvent(c, "TaskCompleted", id, 2, map[string]any{"task_id": id, "status": to})
+	if err := g.taskEvent(ctx, tx, c, "TaskCompleted", id, map[string]any{"task_id": id, "status": to}); err != nil {
+		return nil, err
+	}
 	return map[string]any{"task_id": id, "status": to}, nil
 }
 
