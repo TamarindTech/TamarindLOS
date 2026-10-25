@@ -55,6 +55,20 @@ function Invoke-Tool([string]$Token, [string]$Tool, [hashtable]$ToolInput, [hash
     return Invoke-Api "/v1/tools/$Tool" $Token $body
 }
 
+# Uploads a small mock PDF through a single-use upload link, then attaches it.
+function Send-Document([string]$Token, [string]$AppId, [string]$PartyId, [string]$DocType, [string[]]$Fields) {
+    $text = "%PDF-1.4`n% TAMARIND-DOC: $DocType`n" + (($Fields | ForEach-Object { "$_`n" }) -join "") + "%%EOF`n"
+    $link = Invoke-Tool $Token "document.upload_url" @{
+        application_id = $AppId; party_id = $PartyId; file_name = "$DocType.pdf"; mime_type = "application/pdf"
+    }
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes($text)
+    $null = Invoke-WebRequest -Uri "$BaseUrl$($link.result.upload_url)" -Method Put -Body $bytes `
+        -ContentType "application/octet-stream" -UseBasicParsing
+    return Invoke-Tool $Token "document.attach" @{
+        application_id = $AppId; upload_token = $link.result.upload_token; declared_type = $DocType
+    }
+}
+
 function Check([string]$Step, $Response, [string]$WantStatus, [string]$WantCode = "") {
     $code = ""
     if ($Response.error) { $code = $Response.error.code }
@@ -186,15 +200,25 @@ $r = Invoke-Tool $Tokens.Ana "application.submit" @{ application_id = $loanId }
 Check "parties added and submitted" $r "ok"
 Write-Host ("         state '{0}': waiting for the borrower's consent" -f $r.result.state) -ForegroundColor DarkGray
 
+$uploads = @(
+    @($applicant, "business_registration", @("registration_number: 0105561234567", "legal_name: Mekong Trading Co.")),
+    @($applicant, "bank_statements", @("account_holder: Mekong Trading Co.", "months_covered: 12")),
+    @($applicant, "proof_of_address", @("address: 88 Riverside Road, Bangkok")),
+    @($applicant, "financial_statements", @("years_covered: 2")),
+    @($director, "identity_document", @("legal_name: Somchai P.", "date_of_birth: 1980-04-02"))
+)
+foreach ($u in $uploads) { $r = Send-Document $Tokens.Mekong $loanId $u[0] $u[1] $u[2] }
+Check "the borrower uploads five documents in the portal" $r "ok"
+
 $click = @{ method = "portal_click"; ip = "203.0.113.10" }
 foreach ($c in @(@($applicant, "kyc"), @($applicant, "credit_bureau"), @($applicant, "bank_data"), @($director, "kyc"))) {
     $r = Invoke-Tool $Tokens.Mekong "consent.record" @{ application_id = $loanId; party_id = $c[0]; scope = $c[1]; evidence = $click }
 }
 Check "the borrower gives consent in the portal" $r "ok"
-Write-Host ("         intake complete, state moved to '{0}' by itself" -f $r.result.state) -ForegroundColor DarkGray
 
-# From here the built-in agents (the "agents" service) take over: they wake on the
-# state change, run the checks and propose a decision, with no further calls from us.
+# From here the built-in agents (the "agents" service) take over: the document agent
+# classifies and reads the uploads (completing intake), the verification agent runs the
+# checks and the underwriting agent proposes a decision, with no further calls from us.
 $proposal = $null
 for ($i = 0; $i -lt 45 -and -not $proposal; $i++) {
     Start-Sleep -Seconds 1
@@ -208,6 +232,10 @@ if (-not $proposal) {
     exit 1
 }
 $app = (Invoke-Tool $Tokens.Ana "application.get" @{ application_id = $loanId }).result.application
+$script:Passed++
+$verified = @($app.evidence | Where-Object { $_.status -eq "verified" }).Count
+Write-Host ("  [ok]   {0,-58} -> {1} documents" -f "the document agent classified and read the uploads", @($app.documents).Count) -ForegroundColor Green
+Write-Host ("         {0} of {1} extracted fields verified against the application" -f $verified, @($app.evidence).Count) -ForegroundColor DarkGray
 $script:Passed++
 Write-Host ("  [ok]   {0,-58} -> {1} checks" -f "the verification agent ran the checks on its own", @($app.checks).Count) -ForegroundColor Green
 foreach ($c in $app.checks) { Write-Host ("         {0,-14} {1}" -f $c.check_type, $c.status) -ForegroundColor DarkGray }

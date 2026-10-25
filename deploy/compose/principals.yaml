@@ -62,6 +62,14 @@ principals:
     scopes: [applications:read, policy:evaluate, decisions:recommend, events:read]
     token: dev-agent-underwriting
 
+  - id: agent:documents
+    name: Document agent (classifies, extracts and checks uploaded documents)
+    tenant: demo
+    roles: [agent_documents]
+    trust_level: L3
+    scopes: [applications:read, documents:process, events:read]
+    token: dev-agent-documents
+
   - id: agent:verification
     name: Verification agent (KYC, KYB, sanctions, bureau, bank data)
     tenant: demo

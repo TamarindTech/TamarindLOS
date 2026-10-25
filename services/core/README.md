@@ -57,6 +57,7 @@ go run ./cmd/tamarind serve \
 | `GET /v1/tools` | Catalogue, with which tools are implemented and which the caller has scopes for |
 | `POST /v1/tools/{name}` | Invoke a tool. Body: `{"input": {...}, "idempotency_key": "...", "reason": "...", "on_behalf_of": "...", "dry_run": false, "expected_state_version": 3}` |
 | `POST /mcp` | MCP (Streamable HTTP, JSON responses): `initialize`, `ping`, `tools/list`, `tools/call` |
+| `PUT /v1/uploads/{token}` | Upload a file to a link from `document.upload_url`. The link is the credential (single use, 15 minutes); the file is hashed, its type checked against the declared MIME type and scanned for malware |
 | `GET /v1/events?after=0&types=…&wait=25` | The tenant's domain events in order (scope `events:read`). With `wait`, long-polls until an event commits. Used by the agent runtime ([ADR-0006](../../docs/adr/0006-agent-event-delivery.md)) |
 
 Responses always have the same shape: `status` (`ok`, `approval_required` or `error`), `result`, `approval_request_id`, `error {code, message, details}` and `invocation_id`. HTTP status codes follow the error code: 400 validation, 403 policy, 404 not found, 409 conflict, 422 precondition, 202 approval required.
@@ -66,17 +67,33 @@ Responses always have the same shape: `status` (`ok`, `approval_required` or `er
 | Stage | Tools |
 |---|---|
 | Intake | `application.create`, `application.get`, `application.next_actions`, `application.submit`, `application.withdraw`, `party.add`, `consent.record` |
+| Documents | `document.upload_url`, `document.attach`, `document.classify`, `document.extract`, `evidence.verify`, `document.request` |
 | Verification | `kyc.run` (KYC for people, KYB for businesses), `sanctions.screen`, `credit.pull_report`, `bank.analyse_statements` |
 | Decision | `policy.evaluate`, `decision.recommend`, `decision.approve`, `decision.decline` |
 | Offer and booking | `offer.generate`, `offer.send`, `offer.accept`, `loan.handoff` |
 | Work | `approval.list` (the approval queue, with the proposal and whether you may decide), `approval.respond` |
 
-Document, task and refer tools return `NOT_IMPLEMENTED` until Phase 1.
+Task and refer tools return `NOT_IMPLEMENTED` until Phase 1.
+
+### Documents and evidence
+
+Required documents come from the policy pack (some only above an amount, via CEL `required_when`). A document counts towards completeness once it is classified as the required type for the right party. Extraction turns fields into evidence with a confidence score. Agents may mark evidence verified only at or above the pack's `min_confidence_auto_verify` (0.90) and cannot correct values; people can, and the original value is kept. Extracted values stay out of the event log. Upload links never reach the invocation log.
+
+Mock documents are small PDFs whose text names their type and fields:
+
+```
+%PDF-1.4
+% TAMARIND-DOC: business_registration
+registration_number: 0105561234567
+legal_name: Mekong Trading Co.
+```
+
+A value ending in `?` is read with low confidence. A file containing the EICAR test string is rejected as malware. Files are stored on disk (`TAMARIND_BLOB_DIR`) behind a blob-store port meant for S3-compatible storage.
 
 ### The journey
 
 ```
-draft --submit--> submitted --> intake --(all parties + consents)--> verification
+draft --submit--> submitted --> intake --(parties + consents + classified documents)--> verification
 verification --(all mandatory checks clear)--> underwriting --approve--> decisioned
 decisioned --offer.send--> offered --offer.accept--> accepted --loan.handoff--> handed_off
 verification --(a check needs review)--> referred      any review state --decline--> closed
@@ -91,6 +108,7 @@ Who does what in the demo tenant:
 | `user:officer.ana`, `user:officer.chai` | `dev-officer-ana`, `dev-officer-chai` | Create applications, review agent proposals, generate and send offers |
 | `borrower:mekong` | `dev-borrower-mekong` | Sees only applications linked to it; records consent, accepts offers |
 | `agent:intake` | `dev-agent-intake` | Creates applications and adds parties (L3) |
+| `agent:documents` | `dev-agent-documents` | Classifies and extracts uploads; verifies confident evidence that matches the application (L3) |
 | `agent:verification` | `dev-agent-verification` | Runs checks (L3) |
 | `agent:underwriting` | `dev-agent-underwriting` | Evaluates policy; proposes recommendations (L2: a person must approve) |
 
@@ -149,7 +167,7 @@ TAMARIND_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres
 
 The end-to-end tests create a throwaway database and check, among other things: schema validation, CEL preconditions, the pack's party rules, optimistic concurrency, idempotent replay, agent autonomy and approval requests, maker-checker, re-authorization of approved calls, tenant isolation, MCP `tools/list` filtering, audit-chain verification, tamper detection and that the application role cannot edit events.
 
-`TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event.
+`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event.
 
 ## Layout
 
@@ -169,7 +187,7 @@ migrations/           SQL migrations (embedded in the binary)
 
 - Static tokens instead of OIDC / OAuth 2.1.
 - Minimal in-house MCP server ([ADR-0005](../../docs/adr/0005-mcp-server-phase-0.md)).
-- Documents and evidence are specified but not implemented; completeness counts parties and consents only.
+- Classification and extraction are mocks; bank-statement months and financial-statement years are not yet checked against the pack minimums.
 - Connectors are mocks. Real adapters plug into the same ports.
 - Pricing uses the pack's reference rate; risk grading is not implemented yet.
 - No outbox relay or agent runtime yet; events are written but not delivered.

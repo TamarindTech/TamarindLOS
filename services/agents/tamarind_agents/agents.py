@@ -120,6 +120,84 @@ class VerificationAgent(Agent):
         return out
 
 
+# --- Document agent ------------------------------------------------------------------
+
+
+def _norm(v: Any) -> str:
+    return "".join(ch for ch in str(v).lower() if ch.isalnum())
+
+
+class DocumentAgent(Agent):
+    """Classifies and extracts each uploaded document, then checks the evidence.
+
+    Evidence is verified only when it was read confidently and agrees with what the
+    application already says; anything else goes to a person as needs_review. The
+    gateway enforces the confidence threshold too, so the agent cannot overreach.
+    """
+
+    name = "documents"
+    principal = "agent:documents"
+    event_types = ("DocumentAttached",)
+    min_classification_confidence = 0.5
+
+    def wants(self, event: dict[str, Any]) -> bool:
+        return event.get("type") == "DocumentAttached"
+
+    @staticmethod
+    def references(app: dict[str, Any], party_id: str) -> dict[str, str]:
+        """Values the application already holds, to compare extracted fields against."""
+        parties = app.get("parties", [])
+        party = next((p for p in parties if p["party_id"] == party_id), None)
+        applicant = next((p for p in parties if p["role"] == "applicant"), None)
+        party = party or applicant or {}
+        refs = {"legal_name": party.get("legal_name", ""), "registration_number": party.get("registration_number", ""),
+                "date_of_birth": party.get("date_of_birth", "")}
+        if applicant:
+            refs["account_holder"] = applicant.get("legal_name", "")
+        return {k: v for k, v in refs.items() if v}
+
+    def handle(self, event: dict[str, Any], client: Client) -> Outcome:
+        data = event.get("data") or {}
+        doc_id, app_id = data.get("document_id"), event["aggregate_id"]
+        out = Outcome("acted")
+        cl = client.call("document.classify", {"document_id": doc_id}, reason="documents: classify a new upload",
+                         key=self.key(event, "classify"))
+        out.calls.append({"tool": "document.classify", "status": cl.status, "type": cl.result.get("document_type"),
+                          "error": cl.error_code})
+        if not cl.ok:
+            return Outcome("escalated", f"classification failed: {cl.error_code}", out.calls)
+        doc_type, confidence = cl.result.get("document_type"), cl.result.get("confidence", 0)
+        if doc_type == "other" or confidence < self.min_classification_confidence:
+            return Outcome("escalated", "document not recognised; a person must look at it", out.calls)
+
+        ex = client.call("document.extract", {"document_id": doc_id}, reason=f"documents: extract fields from {doc_type}",
+                         key=self.key(event, "extract"))
+        out.calls.append({"tool": "document.extract", "status": ex.status, "error": ex.error_code})
+        if not ex.ok:
+            return Outcome("escalated", f"extraction failed: {ex.error_code}", out.calls)
+        low = set(ex.result.get("low_confidence_fields") or [])
+        app = self.snapshot(client, app_id, "documents: compare extracted fields with the application") or {}
+        refs = self.references(app, data.get("party_id") or "")
+
+        reviews = 0
+        for e in ex.result.get("evidence") or []:
+            field = e["field"]
+            if field in low:
+                status, note = "needs_review", "low extraction confidence"
+            elif field in refs and _norm(e["value"]) != _norm(refs[field]):
+                status, note = "needs_review", f"{field} does not match the application record"
+            else:
+                status, note = "verified", "matches the application" if field in refs else "read with high confidence"
+            r = client.call("evidence.verify", {"evidence_id": e["evidence_id"], "status": status, "note": note},
+                            reason=f"documents: check {field}", key=self.key(event, "verify", e["evidence_id"]))
+            out.calls.append({"tool": "evidence.verify", "field": field, "status": r.status, "result": status,
+                              "error": r.error_code})
+            reviews += status == "needs_review"
+        count = len(ex.result.get("evidence") or [])
+        out.detail = f"{doc_type} ({confidence:.2f}): {count} fields" + (f", {reviews} for a person" if reviews else "")
+        return out
+
+
 # --- Underwriting analyst ----------------------------------------------------------
 
 
@@ -161,6 +239,11 @@ class UnderwritingAgent(Agent):
             "purpose": app.get("purpose"),
             "metrics": app.get("metrics") or {},
             "checks": app.get("checks_summary") or {},
+            "documents": {
+                "count": len(app.get("documents") or []),
+                "evidence_verified": sum(1 for e in app.get("evidence") or [] if e.get("status") == "verified"),
+                "evidence_for_review": sum(1 for e in app.get("evidence") or [] if e.get("status") == "needs_review"),
+            },
             "policy": {"pack": policy.get("pack"), "version": policy.get("pack_version"), "outcome": policy["outcome"],
                        "rules_passed": sum(1 for r in results if r.get("passed")), "rules_total": len(results),
                        "failed": policy.get("failed") or []},
@@ -207,4 +290,4 @@ class UnderwritingAgent(Agent):
 
 
 def builtin_agents(narrator: Narrator | None = None) -> dict[str, Agent]:
-    return {"verification": VerificationAgent(), "underwriting": UnderwritingAgent(narrator)}
+    return {"documents": DocumentAgent(), "verification": VerificationAgent(), "underwriting": UnderwritingAgent(narrator)}

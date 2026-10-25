@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tamarind_agents.agents import UnderwritingAgent, VerificationAgent
+from tamarind_agents.agents import DocumentAgent, UnderwritingAgent, VerificationAgent
 from tamarind_agents.client import ToolResult
 from tamarind_agents.narrative import AnthropicNarrator, TemplateNarrator, narrator_from_env
 from tamarind_agents.runtime import Cursor, Worker
@@ -94,6 +94,61 @@ class VerificationTests(unittest.TestCase):
         out = VerificationAgent().handle(event("verification"), c)
         self.assertEqual(out.action, "skipped")
         self.assertEqual([t for t, *_ in c.calls], ["application.get"])
+
+
+class DocClient(FakeClient):
+    def __init__(self, app, doc_type="business_registration", confidence=0.97, evidence=None, low=()):
+        super().__init__(app)
+        self.doc_type, self.confidence, self.low = doc_type, confidence, list(low)
+        self.evidence = evidence or []
+
+    def call(self, tool, args, *, reason, key=None, on_behalf_of=None):
+        if tool == "document.classify":
+            self.calls.append((tool, args, reason, key))
+            return ToolResult("ok", {"document_type": self.doc_type, "confidence": self.confidence})
+        if tool == "document.extract":
+            self.calls.append((tool, args, reason, key))
+            return ToolResult("ok", {"evidence": self.evidence, "low_confidence_fields": self.low})
+        return super().call(tool, args, reason=reason, key=key)
+
+
+def attached(party=BIZ):
+    return {"seq": 9, "event_id": "evt-9", "type": "DocumentAttached", "aggregate_id": APP,
+            "data": {"document_id": "doc-1", "party_id": party}}
+
+
+class DocumentTests(unittest.TestCase):
+    def app(self):
+        app = application("intake")
+        app["parties"][0].update(legal_name="Mekong Trading Co.", registration_number="0105561234567")
+        app["parties"][1].update(legal_name="Somchai P.", date_of_birth="1980-04-02")
+        return app
+
+    def verdicts(self, c):
+        return {a["evidence_id"]: a["status"] for t, a, _, _ in c.calls if t == "evidence.verify"}
+
+    def test_verifies_matching_confident_fields_and_flags_the_rest(self):
+        c = DocClient(self.app(), evidence=[
+            {"evidence_id": "e1", "field": "registration_number", "value": "0105561234567", "confidence": 0.95},
+            {"evidence_id": "e2", "field": "legal_name", "value": "MEKONG TRADING CO", "confidence": 0.95},
+            {"evidence_id": "e3", "field": "legal_name", "value": "Other Company Ltd", "confidence": 0.95},
+            {"evidence_id": "e4", "field": "address", "value": "88 Riverside", "confidence": 0.6}], low=["address"])
+        out = DocumentAgent().handle(attached(), c)
+        self.assertEqual(self.verdicts(c), {"e1": "verified", "e2": "verified", "e3": "needs_review", "e4": "needs_review"})
+        self.assertIn("2 for a person", out.detail)
+
+    def test_identity_document_checked_against_the_director(self):
+        c = DocClient(self.app(), doc_type="identity_document", evidence=[
+            {"evidence_id": "e1", "field": "date_of_birth", "value": "1980-04-02", "confidence": 0.95},
+            {"evidence_id": "e2", "field": "legal_name", "value": "Somchai P.", "confidence": 0.95}])
+        DocumentAgent().handle(attached(DIR), c)
+        self.assertEqual(set(self.verdicts(c).values()), {"verified"})
+
+    def test_unrecognised_document_goes_to_a_person(self):
+        c = DocClient(self.app(), doc_type="other", confidence=0.3)
+        out = DocumentAgent().handle(attached(), c)
+        self.assertEqual(out.action, "escalated")
+        self.assertEqual([t for t, *_ in c.calls], ["document.classify"])
 
 
 class UnderwritingTests(unittest.TestCase):

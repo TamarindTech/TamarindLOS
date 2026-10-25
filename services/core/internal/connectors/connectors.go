@@ -87,10 +87,15 @@ type Set struct {
 	Bank      BankData
 	Core      CoreBanking
 	Notify    Notifier
+	Blobs     BlobStore
+	Malware   MalwareScanner
+	Classify  DocumentClassifier
+	Extract   Extractor
 }
 
-// Mocks returns a Set made entirely of mock adapters.
-func Mocks(now func() time.Time) Set {
+// Mocks returns a Set made of mock adapters, storing uploads under blobDir.
+func Mocks(now func() time.Time, blobDir string) Set {
 	m := &Mock{Now: now}
-	return Set{Identity: m, Sanctions: m, Bureau: m, Bank: m, Core: m, Notify: m}
+	return Set{Identity: m, Sanctions: m, Bureau: m, Bank: m, Core: m, Notify: m,
+		Blobs: FSBlobStore{Dir: blobDir}, Malware: m, Classify: m, Extract: m}
 }

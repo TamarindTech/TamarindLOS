@@ -51,8 +51,9 @@ erDiagram
 | `parties` | Individuals and businesses | Restricted identifiers encrypted |
 | `application_parties` | Party roles on an application | Exactly one `applicant` per application |
 | `consents` | Consent per party and scope | Evidence of capture is mandatory; supports expiry and revocation |
-| `documents` | Uploaded files | SHA-256 hash, storage key, classification |
-| `evidence` | Extracted fields with provenance | Page, bounding box, extractor version, confidence, verification status |
+| `uploads` | Single-use upload links and the files received on them | Only the token's SHA-256 is stored; scan result; becomes a document on attach |
+| `documents` | Uploaded files | SHA-256 hash, storage key, declared and classified type |
+| `evidence` | Extracted fields with provenance | Page, bounding box, extractor version, confidence, verification status; original value kept when a person corrects it |
 | `checks` | KYC, KYB, sanctions, bureau, bank analysis, fraud | Links to the consent used |
 | `decision_records` | Recommendations and decisions | Append-only; `based_on` links a decision to its recommendation |
 | `offers` | Offers made to applicants | Amount, term, APR in basis points, schedule summary, disclosures, acceptance evidence |

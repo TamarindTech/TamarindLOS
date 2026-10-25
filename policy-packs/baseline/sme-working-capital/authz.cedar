@@ -112,6 +112,19 @@ permit (
   resource
 );
 
+// The document agent classifies and extracts documents and verifies evidence (above
+// the confidence threshold the gateway enforces). It cannot upload, attach or request.
+permit (
+  principal in Tamarind::Role::"agent_documents",
+  action in [
+    Tamarind::Action::"read",
+    Tamarind::Action::"document.classify",
+    Tamarind::Action::"document.extract",
+    Tamarind::Action::"evidence.verify"
+  ],
+  resource
+);
+
 permit (
   principal in Tamarind::Role::"agent_underwriting",
   action in [Tamarind::Action::"read", Tamarind::Action::"recommend"],

@@ -32,6 +32,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/tools", s.authed(s.listTools))
 	mux.HandleFunc("POST /v1/tools/{name}", s.authed(s.invokeREST))
 	mux.HandleFunc("GET /v1/events", s.authed(s.events))
+	// Upload links are credentials themselves (short-lived, single use): no bearer token.
+	mux.HandleFunc("PUT /v1/uploads/{token}", s.upload)
 	mux.HandleFunc("POST /mcp", s.authed(s.mcp))
 	mux.HandleFunc("GET /mcp", func(w http.ResponseWriter, _ *http.Request) {
 		// No server-initiated stream in Phase 0.
@@ -146,6 +148,16 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, p *auth.Principa
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+// upload receives a file for a link issued by document.upload_url.
+func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
+	out, ue := s.G.ReceiveUpload(r.Context(), r.PathValue("token"), r.Body)
+	if ue != nil {
+		writeJSON(w, ue.HTTP, map[string]any{"status": "error", "error": ue.ToolError})
+		return
+	}
+	writeJSON(w, http.StatusCreated, out)
 }
 
 func traceID(r *http.Request) string {

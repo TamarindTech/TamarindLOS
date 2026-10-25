@@ -45,6 +45,9 @@ services:
     command: ["serve"]
     environment:
       TAMARIND_DATABASE_URL: postgres://tamarind_app:${TAMARIND_APP_DB_PASSWORD:-change-me-app}@postgres:5432/tamarind?sslmode=disable
+      TAMARIND_BLOB_DIR: /var/lib/tamarind/blobs
+    volumes:
+      - blobs:/var/lib/tamarind/blobs   # uploaded documents (S3-compatible storage in production)
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
@@ -64,6 +67,7 @@ services:
     command: ["run"]
     environment:
       TAMARIND_URL: http://core:8080
+      TAMARIND_DOCUMENTS_TOKEN: dev-agent-documents
       TAMARIND_VERIFICATION_TOKEN: dev-agent-verification
       TAMARIND_UNDERWRITING_TOKEN: dev-agent-underwriting
       TAMARIND_LLM_PROVIDER: ${TAMARIND_LLM_PROVIDER:-}
@@ -79,3 +83,4 @@ services:
 volumes:
   pgdata:
   agentstate:
+  blobs:

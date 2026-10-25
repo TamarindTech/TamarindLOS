@@ -2,12 +2,13 @@
 
 Tamarind's built-in agents, in Python ([ADR-0001](../../docs/adr/0001-core-language.md)). They have no special access: each agent has its own identity and token, calls tools through the gateway over MCP like any external agent, and is limited by the same scopes, Cedar policies and autonomy levels.
 
-> **Phase 0.** Two agents, deterministic playbooks, standard library only. Development tokens; do not use with real data.
+> **Phase 0.** Three agents, deterministic playbooks, standard library only. Development tokens; do not use with real data.
 
 ## Agents
 
 | Agent | Wakes when | Does | Autonomy |
 |---|---|---|---|
+| `documents` (`agent:documents`) | A document is attached (`DocumentAttached`) | Classifies and extracts it, then checks each field: verified when read confidently and consistent with the application (name, registration number, date of birth), otherwise needs_review for a person. Unrecognised documents are left for a person | L3; the gateway refuses verification below the confidence threshold |
 | `verification` (`agent:verification`) | An application enters `verification` (intake is complete) | Runs KYB, KYC, sanctions, the commercial bureau report and bank-data analysis for each party, skipping checks already done; a consumer report only where the person consented | L3: acts on its own |
 | `underwriting` (`agent:underwriting`) | An application enters `underwriting` (all mandatory checks clear) | Runs `policy.evaluate`, then proposes `decision.recommend` with the policy outcome, reason codes and a credit memo | L2: a person must approve the proposal |
 
@@ -19,10 +20,12 @@ A sanctions match or a failed identity check moves the case to `referred` for pe
 sequenceDiagram
     participant B as Borrower
     participant G as Tool gateway
+    participant D as Document agent
     participant V as Verification agent
     participant U as Underwriting agent
     participant O as Loan officer
-    B->>G: consent.record (last one)
+    B->>G: document uploads, consent.record
+    D->>G: document.classify, document.extract, evidence.verify
     G-->>G: intake -> verification (event committed, NOTIFY)
     V->>G: GET /v1/events (long poll) wakes
     V->>G: kyc.run, sanctions.screen, credit.pull_report, bank.analyse_statements
@@ -51,7 +54,7 @@ python -m tamarind_agents run --agents verification
 | Variable | Default | |
 |---|---|---|
 | `TAMARIND_URL` | `http://localhost:8080` | Gateway |
-| `TAMARIND_VERIFICATION_TOKEN`, `TAMARIND_UNDERWRITING_TOKEN` | development tokens | One identity per agent |
+| `TAMARIND_DOCUMENTS_TOKEN`, `TAMARIND_VERIFICATION_TOKEN`, `TAMARIND_UNDERWRITING_TOKEN` | development tokens | One identity per agent |
 | `TAMARIND_AGENTS_STATE` | `.tamarind-agents` | Event cursors |
 | `TAMARIND_LLM_PROVIDER` | (none) | `anthropic` to let a model draft memos |
 | `ANTHROPIC_API_KEY`, `TAMARIND_LLM_MODEL` | (none) | Required with `anthropic`; no model is assumed |
@@ -65,10 +68,10 @@ python -m unittest discover -s tests -v                                # playboo
 TAMARIND_URL=http://localhost:8080 python -m unittest tests.test_live  # against a running gateway
 ```
 
-The live test creates three applications (healthy, thin cash flow, sanctions hit), runs both agents and checks the results: an approval proposal, a referral with `FREQUENT_OVERDRAFT`, and a referred case with no proposal. A person then confirms the healthy proposal. CI runs both.
+The live test creates three applications (healthy, thin cash flow, sanctions hit), uploads their documents as the borrower, runs all three agents and checks the results: an approval proposal, a referral with `FREQUENT_OVERDRAFT`, and a referred case with no proposal. A person then confirms the healthy proposal. CI runs both.
 
 ## Next
 
 - Record agent runs (steps, tool calls, cost) in `agent_runs` and escalate with `task.create` instead of only logging.
-- Intake and document agents once the document pipeline lands.
+- An intake agent that chases missing documents with `document.request`.
 - The official MCP Python SDK when the gateway moves to it ([ADR-0005](../../docs/adr/0005-mcp-server-phase-0.md)).

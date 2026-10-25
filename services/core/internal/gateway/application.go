@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/TamarindTech/TamarindLOS/services/core/internal/policy"
 )
 
 // appRecord is the application snapshot used by policies, preconditions and handlers.
@@ -38,15 +40,18 @@ type appRecord struct {
 	Recommendation *decisionRecord // latest recommendation
 	Decision       *decisionRecord // latest final decision
 	Offers         []offerRecord
+	Documents      []documentRecord
+	Evidence       []evidenceRecord
 
 	// Derived by summarize().
-	RecommendedBy   string
-	RecommendedFor  string
-	ChecksSummary   map[string]any
-	Metrics         map[string]any
-	MissingConsents []string
-	Business        map[string]any
-	Directors       []any
+	RecommendedBy    string
+	RecommendedFor   string
+	ChecksSummary    map[string]any
+	Metrics          map[string]any
+	MissingConsents  []string
+	MissingDocuments []string
+	Business         map[string]any
+	Directors        []any
 }
 
 type partyRecord struct {
@@ -57,7 +62,35 @@ type partyRecord struct {
 	Country            string     `json:"country,omitempty"`
 	RegistrationNumber string     `json:"registration_number,omitempty"`
 	DateOfBirth        *time.Time `json:"-"`
+	DOB                string     `json:"date_of_birth,omitempty"`
 	OwnershipPct       *float64   `json:"ownership_pct,omitempty"`
+}
+
+type documentRecord struct {
+	ID           string    `json:"document_id"`
+	PartyID      string    `json:"party_id,omitempty"`
+	DocumentType string    `json:"document_type,omitempty"`
+	DeclaredType string    `json:"declared_type,omitempty"`
+	Confidence   *float64  `json:"classification_confidence,omitempty"`
+	Status       string    `json:"status"`
+	FileName     string    `json:"file_name,omitempty"`
+	MimeType     string    `json:"mime_type"`
+	SizeBytes    int64     `json:"size_bytes"`
+	SHA256       string    `json:"sha256"`
+	StorageKey   string    `json:"-"`
+	UploadedBy   string    `json:"uploaded_by"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type evidenceRecord struct {
+	ID         string  `json:"evidence_id"`
+	DocumentID string  `json:"document_id"`
+	Field      string  `json:"field"`
+	Value      any     `json:"value"`
+	Confidence float64 `json:"confidence"`
+	Status     string  `json:"status"`
+	VerifiedBy string  `json:"verified_by,omitempty"`
+	Note       string  `json:"note,omitempty"`
 }
 
 type consentRecord struct {
@@ -175,6 +208,9 @@ func (g *Gateway) loadApplication(ctx context.Context, tx pgx.Tx, id string, for
 			rows.Close()
 			return nil, err
 		}
+		if pr.DateOfBirth != nil {
+			pr.DOB = pr.DateOfBirth.Format("2006-01-02")
+		}
 		a.Parties = append(a.Parties, pr)
 	}
 	rows.Close()
@@ -273,6 +309,46 @@ func (g *Gateway) loadApplication(ctx context.Context, tx pgx.Tx, id string, for
 		return nil, err
 	}
 
+	// Documents and extracted evidence.
+	rows, err = tx.Query(ctx, `SELECT id::text, COALESCE(party_id::text,''), COALESCE(document_type,''), COALESCE(declared_type,''),
+		classification_confidence::float8, status, COALESCE(file_name,''), mime_type, size_bytes, sha256, storage_key, uploaded_by, created_at
+		FROM documents WHERE application_id = $1 ORDER BY created_at, id`, id)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var d documentRecord
+		if err := rows.Scan(&d.ID, &d.PartyID, &d.DocumentType, &d.DeclaredType, &d.Confidence, &d.Status, &d.FileName,
+			&d.MimeType, &d.SizeBytes, &d.SHA256, &d.StorageKey, &d.UploadedBy, &d.CreatedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		a.Documents = append(a.Documents, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows, err = tx.Query(ctx, `SELECT id::text, document_id::text, field, value, confidence::float8, status::text,
+		COALESCE(verified_by,''), COALESCE(note,'') FROM evidence WHERE application_id = $1 ORDER BY created_at, id`, id)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var e evidenceRecord
+		var v []byte
+		if err := rows.Scan(&e.ID, &e.DocumentID, &e.Field, &v, &e.Confidence, &e.Status, &e.VerifiedBy, &e.Note); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		_ = json.Unmarshal(v, &e.Value)
+		a.Evidence = append(a.Evidence, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	g.summarize(a)
 	return a, nil
 }
@@ -299,6 +375,59 @@ func (a *appRecord) latestCheck(partyID, checkType, report string) *checkRecord 
 		found = c
 	}
 	return found
+}
+
+// requiredDocuments lists the pack's document requirements that apply to this application.
+func (g *Gateway) requiredDocuments(a *appRecord) []policy.DocumentRequirement {
+	var out []policy.DocumentRequirement
+	for _, d := range g.Pack.Documents {
+		if d.Required {
+			out = append(out, d)
+			continue
+		}
+		if d.RequiredWhen == "" {
+			continue
+		}
+		ok, err := g.Pack.Exprs.EvalBool(d.RequiredWhen, map[string]any{"application": map[string]any{
+			"requested_amount_minor": a.RequestedAmountMinor, "requested_term_months": a.RequestedTermMonths}})
+		if err == nil && ok {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// hasDocument reports whether a party has a classified document of a type. Documents
+// attached without a party count for the applicant.
+func (a *appRecord) hasDocument(p partyRecord, docType string) bool {
+	for _, d := range a.Documents {
+		owner := d.PartyID
+		if owner == "" && p.Role == "applicant" {
+			owner = p.PartyID
+		}
+		if owner == p.PartyID && d.DocumentType == docType && (d.Status == "classified" || d.Status == "extracted") {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *appRecord) document(id string) *documentRecord {
+	for i := range a.Documents {
+		if a.Documents[i].ID == id {
+			return &a.Documents[i]
+		}
+	}
+	return nil
+}
+
+func (a *appRecord) evidence(id string) *evidenceRecord {
+	for i := range a.Evidence {
+		if a.Evidence[i].ID == id {
+			return &a.Evidence[i]
+		}
+	}
+	return nil
 }
 
 func (a *appRecord) hasConsent(partyID, scope string) bool {
@@ -346,8 +475,8 @@ func (g *Gateway) summarize(a *appRecord) {
 	pack := g.Pack
 	now := g.Now().UTC()
 
-	// Completeness: required parties and the consents mandatory checks need.
-	// (Document requirements join this calculation with the document pipeline in Phase 1.)
+	// Completeness: required parties, the consents mandatory checks need, and the
+	// required documents (classified, not rejected) for each party they apply to.
 	var items, satisfied int
 	for _, req := range pack.Parties.Required {
 		n := 0
@@ -373,6 +502,20 @@ func (g *Gateway) summarize(a *appRecord) {
 				satisfied++
 			} else {
 				a.MissingConsents = append(a.MissingConsents, fmt.Sprintf("%s consent from %s (%s)", req.Consent, p.LegalName, p.Role))
+			}
+		}
+	}
+	a.MissingDocuments = nil
+	for _, req := range g.requiredDocuments(a) {
+		for _, p := range a.Parties {
+			if !req.AppliesTo(p.Role) {
+				continue
+			}
+			items++
+			if a.hasDocument(p, req.Type) {
+				satisfied++
+			} else {
+				a.MissingDocuments = append(a.MissingDocuments, fmt.Sprintf("%s for %s (%s)", req.Type, p.LegalName, p.Role))
 			}
 		}
 	}
@@ -554,6 +697,9 @@ func (a *appRecord) view() map[string]any {
 		"channel":                a.Channel,
 		"completeness_pct":       a.CompletenessPct,
 		"missing_consents":       nonNil(a.MissingConsents),
+		"missing_documents":      nonNil(a.MissingDocuments),
+		"documents":              nonNilSlice(a.Documents),
+		"evidence":               nonNilSlice(a.Evidence),
 		"created_by":             a.CreatedBy,
 		"created_at":             a.CreatedAt.UTC().Format(time.RFC3339),
 		"parties":                parties,
@@ -579,6 +725,13 @@ func (a *appRecord) view() map[string]any {
 		v["handoff"] = h
 	}
 	return v
+}
+
+func nonNilSlice[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
 
 func nonNil(s []string) []string {
@@ -616,6 +769,10 @@ func (g *Gateway) applicationIDFor(ctx context.Context, tx pgx.Tx, c *call) (str
 		return lookup("approval_requests", "approval_request_id")
 	case c.input["offer_id"] != nil:
 		return lookup("offers", "offer_id")
+	case c.input["document_id"] != nil:
+		return lookup("documents", "document_id")
+	case c.input["evidence_id"] != nil:
+		return lookup("evidence", "evidence_id")
 	}
 	return "", nil
 }

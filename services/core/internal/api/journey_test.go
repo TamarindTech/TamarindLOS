@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,7 +68,77 @@ func (e *env) newApplication(amount int, applicantName string, linkBorrower bool
 	if r.Result["state"] != "intake" {
 		e.t.Fatalf("after submit: want intake, got %v", r.Result["state"])
 	}
+	e.addRequiredDocuments(officer, appID, applicant, director, amount, applicantName)
 	return
+}
+
+// mockDoc builds a small PDF the mock classifier and extractor understand.
+func mockDoc(docType string, fields ...string) []byte {
+	body := "%PDF-1.4\n% TAMARIND-DOC: " + docType + "\n"
+	for _, f := range fields {
+		body += f + "\n"
+	}
+	return []byte(body + "%%EOF\n")
+}
+
+// put uploads content to an upload link and returns the HTTP status and body.
+func (e *env) put(url string, content []byte) (int, map[string]any) {
+	e.t.Helper()
+	req, _ := http.NewRequest("PUT", e.srv.URL+url, bytes.NewReader(content))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	return res.StatusCode, out
+}
+
+// uploadDoc runs upload_url -> PUT -> attach and returns the attach response.
+func (e *env) uploadDoc(token, appID, partyID, fileName, declared string, content []byte) resp {
+	e.t.Helper()
+	in := map[string]any{"application_id": appID, "file_name": fileName, "mime_type": "application/pdf"}
+	if partyID != "" {
+		in["party_id"] = partyID
+	}
+	r := e.call(token, "document.upload_url", in, nil)
+	expect(e.t, r, "ok", "")
+	if status, body := e.put(r.Result["upload_url"].(string), content); status != http.StatusCreated && status != http.StatusUnprocessableEntity {
+		e.t.Fatalf("upload: %d %+v", status, body)
+	}
+	attach := map[string]any{"application_id": appID, "upload_token": r.Result["upload_token"]}
+	if declared != "" {
+		attach["declared_type"] = declared
+	}
+	return e.call(token, "document.attach", attach, nil)
+}
+
+// addRequiredDocuments uploads and classifies the pack's required documents.
+func (e *env) addRequiredDocuments(token, appID, applicant, director string, amount int, applicantName string) {
+	e.t.Helper()
+	docs := []struct {
+		party, docType string
+		fields         []string
+	}{
+		{applicant, "business_registration", []string{"registration_number: 0105561234567", "legal_name: " + applicantName}},
+		{applicant, "bank_statements", []string{"account_holder: " + applicantName, "months_covered: 12"}},
+		{applicant, "proof_of_address", []string{"address: 88 Riverside Road, Bangkok"}},
+		{director, "identity_document", []string{"legal_name: Somchai P.", "date_of_birth: 1980-04-02"}},
+	}
+	if amount > 2500000 {
+		docs = append(docs, struct {
+			party, docType string
+			fields         []string
+		}{applicant, "financial_statements", []string{"years_covered: 2"}})
+	}
+	for _, d := range docs {
+		r := e.uploadDoc(token, appID, d.party, d.docType+".pdf", d.docType, mockDoc(d.docType, d.fields...))
+		expect(e.t, r, "ok", "")
+		r = e.call(token, "document.classify", map[string]any{"document_id": r.Result["document_id"]}, nil)
+		expect(e.t, r, "ok", "")
+	}
 }
 
 var portalClick = map[string]any{"method": "portal_click", "ip": "203.0.113.10"}
@@ -81,7 +152,8 @@ func TestLoanJourney(t *testing.T) {
 
 	appID, applicant, director := e.newApplication(5000000, "Mekong Trading Co.", true)
 	app := e.state(officer, appID)
-	if app["completeness_pct"].(float64) >= 100 || len(app["missing_consents"].([]any)) != 4 {
+	if app["completeness_pct"].(float64) >= 100 || len(app["missing_consents"].([]any)) != 4 ||
+		len(app["missing_documents"].([]any)) != 0 || len(app["documents"].([]any)) != 5 {
 		t.Fatalf("expected 4 missing consents, got %v / %v", app["completeness_pct"], app["missing_consents"])
 	}
 

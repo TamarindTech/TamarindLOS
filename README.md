@@ -4,7 +4,7 @@
 
 Tamarind helps lenders take a loan application from intake to an approved, signed offer, with AI agents doing the routine work and people staying in control of credit decisions.
 
-> **Status: Phase 0 (foundations).** One SME loan runs from intake to booking. Once the borrower consents, built-in agents take over: a verification agent runs the checks through mock connectors and an underwriting agent evaluates the CEL policy rules and proposes a decision. People approve it within their limits, the borrower accepts the offer, and the loan is handed to (mock) core banking. Everything goes through one tool gateway over REST and MCP, with Cedar authorization, agent autonomy levels and a hash-chained audit log on PostgreSQL. It is not ready for real data. See the [roadmap](#roadmap) and [open decisions](docs/adr/README.md).
+> **Status: Phase 0 (foundations).** One SME loan runs from intake to booking. The borrower uploads documents and gives consent in the portal; then built-in agents take over: a document agent classifies and reads the uploads and checks them against the application, a verification agent runs the checks through mock connectors, and an underwriting agent evaluates the CEL policy rules and proposes a decision. People approve it within their limits, the borrower accepts the offer, and the loan is handed to (mock) core banking. Everything goes through one tool gateway over REST and MCP, with Cedar authorization, agent autonomy levels and a hash-chained audit log on PostgreSQL. It is not ready for real data. See the [roadmap](#roadmap) and [open decisions](docs/adr/README.md).
 
 ---
 
@@ -81,7 +81,7 @@ Compose starts PostgreSQL, the core service and the agent runtime. On Windows, `
 | Phase | Outcome | Status |
 |---|---|---|
 | **Design** | Concept, reference architecture, core decisions, specifications | Done |
-| **0 — Foundations** | Tool gateway, domain core, state machine, audit ledger, REST + MCP adapters, mock connectors | In progress: gateway, REST + MCP, audit ledger, CI, mock connectors, the full intake-to-booking journey, event feed and the Python agent runtime (verification and underwriting agents) done; document pipeline next |
+| **0 — Foundations** | Tool gateway, domain core, state machine, audit ledger, REST + MCP adapters, mock connectors | In progress: gateway, REST + MCP, audit ledger, CI, mock connectors, the full intake-to-booking journey, event feed, the Python agent runtime and the document pipeline (upload, scan, classify, extract, verify) done; agent run records, escalation tasks and risk grading next |
 | **1 — Assisted origination** | Officer console, document pipeline, intake and document agents, decision records | Planned |
 | **2 — Supervised automation** | Verification agent, policy packs, approval gates, evaluation harness, Fineract hand-off | Planned |
 | **3 — Ecosystem** | Borrower portal, external agent access, more connectors and jurisdiction packs | Planned |

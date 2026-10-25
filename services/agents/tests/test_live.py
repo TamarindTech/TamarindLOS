@@ -14,7 +14,7 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from tamarind_agents.agents import UnderwritingAgent, VerificationAgent
+from tamarind_agents.agents import DocumentAgent, UnderwritingAgent, VerificationAgent
 from tamarind_agents.client import TamarindClient
 from tamarind_agents.runtime import Worker
 
@@ -32,6 +32,29 @@ def rest(token: str, tool: str, inp: dict) -> dict:
         return json.loads(e.read())
 
 
+def put(path: str, content: bytes) -> int:
+    req = urllib.request.Request(f"{URL}{path}", data=content, method="PUT")
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+def mock_doc(doc_type: str, *fields: str) -> bytes:
+    return ("%PDF-1.4\n% TAMARIND-DOC: " + doc_type + "\n" + "".join(f + "\n" for f in fields) + "%%EOF\n").encode()
+
+
+def upload(app: str, party: str, doc_type: str, content: bytes) -> None:
+    """The borrower uploads through the portal: link, PUT, attach. The document agent does the rest."""
+    r = rest("dev-borrower-mekong", "document.upload_url", {"application_id": app, "party_id": party,
+             "file_name": f"{doc_type}.pdf", "mime_type": "application/pdf"})
+    assert put(r["result"]["upload_url"], content) == 201
+    r = rest("dev-borrower-mekong", "document.attach", {"application_id": app, "upload_token": r["result"]["upload_token"],
+             "declared_type": doc_type})
+    assert r["status"] == "ok", r
+
+
 def new_application(name: str, amount: int = 5000000) -> str:
     r = rest("dev-officer-ana", "application.create", {"product_code": "SME-WC", "requested_amount_minor": amount,
              "currency": "USD", "requested_term_months": 12, "borrower": "borrower:mekong"})
@@ -41,6 +64,12 @@ def new_application(name: str, amount: int = 5000000) -> str:
     d = rest("dev-officer-ana", "party.add", {"application_id": app, "kind": "individual", "role": "director",
              "legal_name": "Somchai P.", "date_of_birth": "1980-04-02"})["result"]["party_id"]
     assert rest("dev-officer-ana", "application.submit", {"application_id": app})["status"] == "ok"
+    upload(app, biz, "business_registration", mock_doc("business_registration", "registration_number: 0105561234567",
+                                                       f"legal_name: {name}"))
+    upload(app, biz, "bank_statements", mock_doc("bank_statements", f"account_holder: {name}", "months_covered: 12"))
+    upload(app, biz, "proof_of_address", mock_doc("proof_of_address", "address: 88 Riverside Road?"))
+    upload(app, biz, "financial_statements", mock_doc("financial_statements", "years_covered: 2"))
+    upload(app, d, "identity_document", mock_doc("identity_document", "legal_name: Somchai P.", "date_of_birth: 1980-04-02"))
     for party, scope in [(biz, "kyc"), (biz, "credit_bureau"), (biz, "bank_data"), (d, "kyc")]:
         r = rest("dev-borrower-mekong", "consent.record", {"application_id": app, "party_id": party, "scope": scope,
                  "evidence": {"method": "portal_click"}})
@@ -55,7 +84,7 @@ class LiveAgentsTest(unittest.TestCase):
         self.addCleanup(self.state.cleanup)
 
     def run_agents(self):
-        for agent, token in [(VerificationAgent(), "dev-agent-verification"),
+        for agent, token in [(DocumentAgent(), "dev-agent-documents"), (VerificationAgent(), "dev-agent-verification"),
                              (UnderwritingAgent(), "dev-agent-underwriting")]:
             Worker(agent, TamarindClient(URL, token), Path(self.state.name)).drain()
 
@@ -76,6 +105,12 @@ class LiveAgentsTest(unittest.TestCase):
 
         app = self.get(healthy)
         self.assertEqual(app["state"], "underwriting")
+        # The document agent classified all five uploads and checked their fields; the
+        # low-confidence address waits for a person.
+        self.assertEqual(app["missing_documents"], [])
+        self.assertTrue(all(d["status"] == "extracted" for d in app["documents"]))
+        review = [e["field"] for e in app["evidence"] if e["status"] == "needs_review"]
+        self.assertEqual(review, ["address"])
         self.assertTrue(app["checks_summary"]["all_mandatory_complete"])
         queue = self.pending(healthy)
         self.assertEqual(len(queue), 1)

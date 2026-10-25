@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -45,7 +47,7 @@ type Gateway struct {
 func New(ctx context.Context, cat *catalogue.Catalogue, pack *policy.Pack, reg *auth.Registry, db *pgxpool.Pool, log *slog.Logger) (*Gateway, error) {
 	g := &Gateway{Catalogue: cat, Pack: pack, Registry: reg, DB: db, Log: log, Now: time.Now, tenantIDs: map[string]string{}}
 	g.handlers = g.registerHandlers()
-	g.Connectors = connectors.Mocks(func() time.Time { return g.Now() })
+	g.Connectors = connectors.Mocks(func() time.Time { return g.Now() }, filepath.Join(os.TempDir(), "tamarind-blobs"))
 	for slug := range reg.Tenants {
 		var id string
 		if err := db.QueryRow(ctx, `SELECT id::text FROM tenants WHERE slug = $1`, slug).Scan(&id); err != nil {
@@ -335,6 +337,11 @@ func (g *Gateway) celVars(c *call) map[string]any {
 		} else if n := len(c.app.Offers); n > 0 {
 			o = &c.app.Offers[n-1]
 		}
+		if id, ok := c.input["document_id"].(string); ok {
+			if d := c.app.document(id); d != nil {
+				vars["document"] = map[string]any{"document_id": d.ID, "document_type": d.DocumentType, "status": d.Status}
+			}
+		}
 		if o != nil {
 			vars["offer"] = map[string]any{"offer_id": o.ID, "status": o.Status, "expires_at": o.ExpiresAt.UTC(),
 				"amount_minor": o.AmountMinor, "term_months": int64(o.TermMonths), "rate_apr_bps": int64(o.RateAPRBps)}
@@ -489,7 +496,7 @@ func (g *Gateway) recordInvocation(ctx context.Context, tx pgx.Tx, c *call, resp
 	} else if id, ok := c.input["application_id"].(string); ok && isUUID(id) {
 		appID = &id
 	}
-	stored, _ := json.Marshal(resp)
+	stored, _ := json.Marshal(redact(resp))
 	reason := c.env.Reason
 	if reason == "" && c.p.IsAgent() {
 		reason = "(no reason given)"
@@ -586,4 +593,34 @@ func isUUID(s string) bool {
 		}
 	}
 	return true
+}
+
+// secretResultKeys are result fields that must not be kept in the invocation log
+// (they grant access on their own, like upload links).
+var secretResultKeys = map[string]bool{"upload_url": true, "upload_token": true}
+
+// redact returns the response with secret result fields replaced.
+func redact(resp *Response) *Response {
+	m, ok := resp.Result.(map[string]any)
+	if !ok {
+		return resp
+	}
+	var copied map[string]any
+	for k := range m {
+		if secretResultKeys[k] {
+			if copied == nil {
+				copied = make(map[string]any, len(m))
+				for k2, v := range m {
+					copied[k2] = v
+				}
+			}
+			copied[k] = "[redacted]"
+		}
+	}
+	if copied == nil {
+		return resp
+	}
+	r := *resp
+	r.Result = copied
+	return &r
 }

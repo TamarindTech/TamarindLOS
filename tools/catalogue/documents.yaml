@@ -3,7 +3,7 @@ description: Document collection, classification, extraction and evidence verifi
 tools:
   - name: document.upload_url
     version: 0.1.0
-    summary: Issue a short-lived signed URL for uploading a document.
+    summary: Issue a short-lived, single-use link for uploading a document (HTTP PUT of the raw file).
     risk_tier: low
     default_autonomy: L3
     mutates: false
@@ -91,6 +91,7 @@ tools:
       type: object
       properties:
         evidence_ids: { type: array, items: { type: string, format: uuid } }
+        evidence: { type: array, items: { type: object }, description: "Extracted fields with values and confidence." }
         low_confidence_fields: { type: array, items: { type: string } }
 
   - name: document.request
@@ -118,6 +119,7 @@ tools:
   - name: evidence.verify
     version: 0.1.0
     summary: Mark extracted evidence as verified or rejected, or route it to human review.
+    description: Agents may mark evidence verified only when its extraction confidence meets the pack's auto-verify threshold, and may not correct values. People can correct a value; the original is kept.
     risk_tier: low
     default_autonomy: L3
     mutates: true

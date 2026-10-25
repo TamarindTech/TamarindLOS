@@ -41,6 +41,12 @@ func (g *Gateway) registerHandlers() map[string]handler {
 		"offer.accept":             g.offerAccept,
 		"loan.handoff":             g.loanHandoff,
 		"approval.list":            g.approvalList,
+		"document.upload_url":      g.documentUploadURL,
+		"document.attach":          g.documentAttach,
+		"document.classify":        g.documentClassify,
+		"document.extract":         g.documentExtract,
+		"document.request":         g.documentRequest,
+		"evidence.verify":          g.evidenceVerify,
 	}
 }
 
@@ -265,7 +271,7 @@ func (g *Gateway) applicationNextActions(_ context.Context, _ pgx.Tx, c *call) (
 		"blocked":           block,
 		"missing_parties":   g.missingParties(c.app),
 		"missing_consents":  nonNil(c.app.MissingConsents),
-		"missing_documents": g.Pack.RequiredDocuments(), // document tracking arrives in Phase 1
+		"missing_documents": nonNil(c.app.MissingDocuments),
 	}, nil
 }
 

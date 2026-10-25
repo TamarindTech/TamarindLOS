@@ -57,10 +57,22 @@ type PartyRequirement struct {
 
 // DocumentRequirement is one entry of documents.
 type DocumentRequirement struct {
-	Type         string          `json:"type"`
-	Party        json.RawMessage `json:"party"`
-	Required     bool            `json:"required"`
-	RequiredWhen string          `json:"required_when"`
+	Type         string     `json:"type"`
+	Party        StringList `json:"party"` // role, list of roles, or "all"
+	Required     bool       `json:"required"`
+	RequiredWhen string     `json:"required_when"` // CEL over `application`; makes the document required when true
+	MinMonths    int        `json:"min_months"`
+	MinYears     int        `json:"min_years"`
+}
+
+// AppliesTo reports whether the requirement covers a party role.
+func (r DocumentRequirement) AppliesTo(role string) bool {
+	for _, p := range r.Party {
+		if p == "all" || p == role {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckRequirement is one entry of checks: which check must run for which parties.
@@ -105,6 +117,10 @@ type Pack struct {
 	AuthorizationFile string                `json:"authorization"`
 	Autonomy          map[string]string     `json:"autonomy"`
 	ApprovalAuthority []Authority           `json:"approval_authority"`
+	Evidence          struct {
+		// Agents may mark evidence verified only at or above this extraction confidence.
+		MinConfidenceAutoVerify float64 `json:"min_confidence_auto_verify"`
+	} `json:"evidence"`
 
 	// ProductData is the raw product section, exposed to CEL as `product`.
 	ProductData map[string]any `json:"-"`
@@ -165,17 +181,6 @@ func (p *Pack) ApprovalLimit(roles []string) int64 {
 	return limit
 }
 
-// RequiredDocuments returns document types that are unconditionally required.
-func (p *Pack) RequiredDocuments() []string {
-	var out []string
-	for _, d := range p.Documents {
-		if d.Required {
-			out = append(out, d.Type)
-		}
-	}
-	return out
-}
-
 // Validate cross-checks the pack against the tool catalogue. It returns every problem found.
 func (p *Pack) Validate(cat *catalogue.Catalogue) []string {
 	var problems []string
@@ -229,6 +234,16 @@ func (p *Pack) Validate(cat *catalogue.Catalogue) []string {
 		if !sameSet(sm[0].From, t.Transition.From) || sm[0].To != t.Transition.To {
 			add("tool %s: catalogue transition %v -> %s differs from state machine %v -> %s",
 				name, t.Transition.From, t.Transition.To, sm[0].From, sm[0].To)
+		}
+	}
+	for _, d := range p.Documents {
+		if d.RequiredWhen != "" {
+			if _, err := p.Exprs.Compile(d.RequiredWhen); err != nil {
+				add("document %s: required_when does not compile: %v", d.Type, err)
+			}
+		}
+		if len(d.Party) == 0 {
+			add("document %s: party is required", d.Type)
 		}
 	}
 	for tool, level := range p.Autonomy {

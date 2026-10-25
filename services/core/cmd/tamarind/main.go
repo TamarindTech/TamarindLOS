@@ -26,6 +26,7 @@ import (
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/api"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/auth"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/catalogue"
+	"github.com/TamarindTech/TamarindLOS/services/core/internal/connectors"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/gateway"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/policy"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/seed"
@@ -194,6 +195,7 @@ func cmdServe(ctx context.Context, args []string, log *slog.Logger) error {
 	c.register(fs)
 	addr := fs.String("addr", env("TAMARIND_ADDR", ":8080"), "listen address")
 	dsn := fs.String("database-url", env("TAMARIND_DATABASE_URL", ""), "application connection string (tamarind_app role)")
+	blobDir := fs.String("blob-dir", env("TAMARIND_BLOB_DIR", ".tamarind-blobs"), "directory for uploaded documents")
 	_ = fs.Parse(args)
 	if *dsn == "" {
 		return errors.New("--database-url (or TAMARIND_DATABASE_URL) is required")
@@ -215,6 +217,7 @@ func cmdServe(ctx context.Context, args []string, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	g.Connectors.Blobs = connectors.FSBlobStore{Dir: *blobDir}
 	go g.Listen(ctx) // wakes event-feed subscribers
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{G: g, Log: log}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

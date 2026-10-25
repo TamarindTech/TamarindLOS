@@ -26,6 +26,7 @@ import (
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/api"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/auth"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/catalogue"
+	"github.com/TamarindTech/TamarindLOS/services/core/internal/connectors"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/gateway"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/policy"
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/seed"
@@ -103,6 +104,7 @@ func setup(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
+	g.Connectors.Blobs = connectors.FSBlobStore{Dir: t.TempDir()}
 	srv := httptest.NewServer((&api.Server{G: g, Log: log}).Handler())
 	t.Cleanup(srv.Close)
 	return &env{t: t, srv: srv, g: g, pool: pool, adminDB: adminDBURL(adminURL, dbName)}

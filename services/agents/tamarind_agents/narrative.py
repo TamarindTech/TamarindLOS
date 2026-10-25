@@ -67,6 +67,10 @@ class TemplateNarrator:
             + ("; serious bureau default in 24 months." if (c.get("bureau") or {}).get("serious_default_24m")
                else "; no serious bureau default.")
         )
+        d = facts.get("documents") or {}
+        if d.get("count"):
+            lines.append(f"Documents: {d['count']} on file; {d.get('evidence_verified', 0)} extracted fields verified"
+                         + (f", {d['evidence_for_review']} waiting for review." if d.get("evidence_for_review") else "."))
         if p.get("failed"):
             lines.append("Failed rules: " + ", ".join(f"{f['rule_id']} {f['reason_code']} ({f['outcome']})" for f in p["failed"]) + ".")
         lines.append({
