@@ -1,0 +1,60 @@
+catalogue: integrations
+description: Outbound integration. Events are delivered to subscribed URLs, signed with the subscription's secret.
+tools:
+  - name: webhook.subscribe
+    version: 0.1.0
+    summary: Deliver this tenant's events to a URL. Returns the signing secret once.
+    description: Each delivery is a POST with the event as JSON and headers X-Tamarind-Event, X-Tamarind-Delivery, X-Tamarind-Timestamp and X-Tamarind-Signature (sha256=HMAC-SHA256 of "<timestamp>.<body>" with the secret). Deliveries are retried with backoff and may arrive more than once; use the delivery id to deduplicate. Destinations must be https on a public host.
+    risk_tier: medium
+    default_autonomy: L0
+    max_autonomy: L0
+    mutates: true
+    idempotent: true
+    scopes: [webhooks:manage]
+    emits: [WebhookSubscribed]
+    errors: [VALIDATION_FAILED, POLICY_DENIED]
+    input:
+      type: object
+      required: [url]
+      properties:
+        url: { type: string, format: uri, maxLength: 2000 }
+        event_types: { type: array, items: { type: string }, description: "Event types to deliver; empty for all." }
+        description: { type: string, maxLength: 200 }
+    output:
+      type: object
+      properties:
+        subscription_id: { type: string, format: uuid }
+        secret: { type: string, description: "Shown once; sign-verify deliveries with it." }
+
+  - name: webhook.list
+    version: 0.1.0
+    summary: List this tenant's webhook subscriptions with delivery counts.
+    risk_tier: read
+    default_autonomy: L0
+    max_autonomy: L0
+    mutates: false
+    idempotent: true
+    scopes: [webhooks:manage]
+    input: { type: object, properties: {} }
+    output:
+      type: object
+      properties:
+        subscriptions: { type: array, items: { type: object } }
+
+  - name: webhook.remove
+    version: 0.1.0
+    summary: Stop deliveries to a subscription. Pending deliveries are dropped.
+    risk_tier: medium
+    default_autonomy: L0
+    max_autonomy: L0
+    mutates: true
+    idempotent: true
+    scopes: [webhooks:manage]
+    emits: [WebhookRemoved]
+    errors: [NOT_FOUND]
+    input:
+      type: object
+      required: [subscription_id]
+      properties:
+        subscription_id: { type: string, format: uuid }
+    output: { type: object, properties: { status: { type: string } } }
