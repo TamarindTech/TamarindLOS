@@ -60,6 +60,8 @@ erDiagram
 | `tasks` | Work queue for humans and agents | Assignee is a principal or `role:…`; `agent_run_id` when an agent created it; `reminders`, `last_reminded_at` and `overdue_notified_at` for chasing |
 | `approval_requests` | Gated tool calls awaiting a human | Stores the original tool input; maker-checker constraint |
 | `tool_invocations` | Gateway audit of every call | Unique idempotency key per actor and tool |
+| `webhook_subscriptions` | Where a tenant's events are delivered | URL, event-type filter, signing secret (shown once at subscription) |
+| `webhook_deliveries` | One row per event per subscription | Status, attempts, next attempt, last HTTP status; the delivery id is the receiver's idempotency key |
 | `agent_runs` | Each agent execution | Trigger event, status, steps, tokens, cost, summary and the escalation task; at most one running run per agent per application. Each tool call in a run carries `tool_invocations.agent_run_id` |
 | `events` | Domain event log | Append-only, per-tenant hash chain |
 | `outbox` | Reliable publication of events | Written in the same transaction as the event |

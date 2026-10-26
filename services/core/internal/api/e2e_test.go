@@ -99,7 +99,7 @@ func setup(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	log := slog.New(slog.NewTextHandler(testLogWriter{t}, nil))
 	g, err := gateway.New(ctx, cat, pack, reg, pool, log)
 	if err != nil {
 		t.Fatal(err)
@@ -442,4 +442,12 @@ func TestUnauthenticated(t *testing.T) {
 	if res.StatusCode != http.StatusUnauthorized {
 		t.Errorf("got %d", res.StatusCode)
 	}
+}
+
+// testLogWriter sends gateway logs to the test log, so an INTERNAL error shows its cause.
+type testLogWriter struct{ t *testing.T }
+
+func (w testLogWriter) Write(p []byte) (int, error) {
+	w.t.Log(strings.TrimSpace(string(p)))
+	return len(p), nil
 }

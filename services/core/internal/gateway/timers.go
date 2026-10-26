@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -17,9 +18,11 @@ import (
 //                    for whatever is missing.
 //   TaskOverdue      an open task passed its due date (reported once per due date;
 //                    task.remind moves the due date on).
+//   AgentRunFinished for a run left open longer than staleRunAfter (the agent died
+//                    before closing it), closed as failed.
 //
-// Ticks run in every replica; a transaction-scoped advisory lock lets only one of them
-// do the work at a time.
+// Ticks run in every replica; each event is claimed with a conditional update, so only
+// one replica emits it.
 
 // SchedulerActor is the principal recorded on events the scheduler emits.
 const SchedulerActor = "svc:scheduler"
@@ -42,125 +45,195 @@ func (g *Gateway) RunTimers(ctx context.Context, every time.Duration) {
 	}
 }
 
-// Tick emits the time-based events that are due now, for every tenant. It returns how
-// many events it emitted.
+// Tick emits the time-based events that are due now, for every tenant, and returns how
+// many it emitted. Each event is its own short transaction that takes locks in the same
+// order as a tool call (application row, then task row, then the event log), so a tick
+// never deadlocks with in-flight calls. The claims are conditional, so replicas ticking
+// at the same time do not emit twice. A tenant that fails does not stop the others.
 func (g *Gateway) Tick(ctx context.Context) (int, error) {
 	total := 0
+	var errs []error
 	for _, tenant := range g.tenantIDs {
-		err := withTenantTx(ctx, g.DB, tenant, func(tx pgx.Tx) error {
-			var leader bool
-			if err := tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtext('tamarind:timers:' || $1))`, tenant).
-				Scan(&leader); err != nil || !leader {
+		n, err := g.intakeReviews(ctx, tenant)
+		total += n
+		if err != nil {
+			errs = append(errs, fmt.Errorf("tenant %s: intake reviews: %w", tenant, err))
+		}
+		m, err := g.overdueTasks(ctx, tenant)
+		total += m
+		if err != nil {
+			errs = append(errs, fmt.Errorf("tenant %s: overdue tasks: %w", tenant, err))
+		}
+		k, err := g.abandonedRuns(ctx, tenant)
+		total += k
+		if err != nil {
+			errs = append(errs, fmt.Errorf("tenant %s: abandoned runs: %w", tenant, err))
+		}
+	}
+	return total, errors.Join(errs...)
+}
+
+// candidates runs a read-only query for the ids due in a tenant.
+func (g *Gateway) candidates(ctx context.Context, tenant, query string, args ...any) ([]string, error) {
+	var ids []string
+	err := withTenantTx(ctx, g.DB, tenant, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
 				return err
 			}
-			n, err := g.intakeReviews(ctx, tx, tenant)
+			ids = append(ids, id)
+		}
+		return rows.Err()
+	})
+	return ids, err
+}
+
+func (g *Gateway) intakeReviews(ctx context.Context, tenant string) (int, error) {
+	now := g.Now().UTC()
+	ids, err := g.candidates(ctx, tenant, `SELECT id::text FROM applications
+		WHERE state = 'intake' AND intake_review_at IS NULL AND submitted_at <= $1`, now.Add(-g.IntakeGrace))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, id := range ids {
+		err := withTenantTx(ctx, g.DB, tenant, func(tx pgx.Tx) error {
+			// Claim the application (its row lock first, like a tool call); another
+			// replica or a state change since the candidate query means nothing to do.
+			var version int
+			err := tx.QueryRow(ctx, `UPDATE applications SET intake_review_at = $2, state_version = state_version + 1, updated_at = now()
+				WHERE id = $1 AND state = 'intake' AND intake_review_at IS NULL RETURNING state_version`, id, now).Scan(&version)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
 			if err != nil {
 				return err
 			}
-			m, err := g.overdueTasks(ctx, tx, tenant)
-			total += n + m
-			return err
+			n++
+			return appendEvent(ctx, tx, Event{TenantID: tenant, AggregateType: "application", AggregateID: id,
+				AggregateVersion: version, Type: "IntakeReviewDue", Actor: SchedulerActor, OccurredAt: now,
+				Data: map[string]any{"grace_minutes": int(g.IntakeGrace.Minutes())}})
 		})
 		if err != nil {
-			return total, err
+			return n, err
 		}
 	}
-	return total, nil
+	return n, nil
 }
 
-func (g *Gateway) intakeReviews(ctx context.Context, tx pgx.Tx, tenant string) (int, error) {
+func (g *Gateway) overdueTasks(ctx context.Context, tenant string) (int, error) {
 	now := g.Now().UTC()
-	rows, err := tx.Query(ctx, `UPDATE applications SET intake_review_at = $1, state_version = state_version + 1, updated_at = now()
-		WHERE state = 'intake' AND intake_review_at IS NULL AND submitted_at <= $2
-		RETURNING id::text, state_version`, now, now.Add(-g.IntakeGrace))
-	if err != nil {
-		return 0, err
-	}
-	type due struct {
-		id      string
-		version int
-	}
-	var list []due
-	for rows.Next() {
-		var d due
-		if err := rows.Scan(&d.id, &d.version); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		list = append(list, d)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	for _, d := range list {
-		if err := appendEvent(ctx, tx, Event{TenantID: tenant, AggregateType: "application", AggregateID: d.id,
-			AggregateVersion: d.version, Type: "IntakeReviewDue", Actor: SchedulerActor, OccurredAt: now,
-			Data: map[string]any{"grace_minutes": int(g.IntakeGrace.Minutes())}}); err != nil {
-			return 0, err
-		}
-	}
-	return len(list), nil
-}
-
-func (g *Gateway) overdueTasks(ctx context.Context, tx pgx.Tx, tenant string) (int, error) {
-	now := g.Now().UTC()
-	rows, err := tx.Query(ctx, `UPDATE tasks SET overdue_notified_at = $1
+	ids, err := g.candidates(ctx, tenant, `SELECT id::text FROM tasks
 		WHERE status IN ('open', 'in_progress') AND due_at <= $1
-		  AND (overdue_notified_at IS NULL OR overdue_notified_at < due_at)
-		RETURNING id::text, COALESCE(application_id::text, ''), kind, assignee, reminders, details`, now)
+		  AND (overdue_notified_at IS NULL OR overdue_notified_at < due_at)`, now)
 	if err != nil {
-		return 0, err
-	}
-	type overdue struct {
-		id, app, kind, assignee string
-		reminders               int
-		details                 []byte
-	}
-	var list []overdue
-	for rows.Next() {
-		var o overdue
-		if err := rows.Scan(&o.id, &o.app, &o.kind, &o.assignee, &o.reminders, &o.details); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		list = append(list, o)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
 		return 0, err
 	}
 	limit := g.Pack.Intake.ReminderLimit()
-	for _, o := range list {
-		data := map[string]any{"task_id": o.id, "kind": o.kind, "assignee": o.assignee, "reminders": o.reminders,
-			"reminders_left": max(limit-o.reminders, 0), "details": jsonMap(o.details)}
-		ev := Event{TenantID: tenant, Type: "TaskOverdue", Actor: SchedulerActor, OccurredAt: now, Data: data}
-		if o.app != "" {
-			ev.AggregateType, ev.AggregateID = "application", o.app
-			if err := tx.QueryRow(ctx, `UPDATE applications SET state_version = state_version + 1, updated_at = now()
-				WHERE id = $1 RETURNING state_version`, o.app).Scan(&ev.AggregateVersion); err != nil {
-				return 0, err
+	n := 0
+	for _, id := range ids {
+		err := withTenantTx(ctx, g.DB, tenant, func(tx pgx.Tx) error {
+			// Lock the application first, then claim the task, then write the event.
+			var app *string
+			if err := tx.QueryRow(ctx, `SELECT application_id::text FROM tasks WHERE id = $1`, id).Scan(&app); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return nil
+				}
+				return err
 			}
-		} else {
-			ev.AggregateType, ev.AggregateID = "task", o.id
-			if ev.AggregateVersion, err = nextVersion(ctx, tx, "task", o.id); err != nil {
-				return 0, err
+			ev := Event{TenantID: tenant, Type: "TaskOverdue", Actor: SchedulerActor, OccurredAt: now}
+			if app != nil {
+				var version int
+				if err := tx.QueryRow(ctx, `UPDATE applications SET state_version = state_version + 1, updated_at = now()
+					WHERE id = $1 RETURNING state_version`, *app).Scan(&version); err != nil {
+					return err
+				}
+				ev.AggregateType, ev.AggregateID, ev.AggregateVersion = "application", *app, version
 			}
-		}
-		if err := appendEvent(ctx, tx, ev); err != nil {
-			return 0, err
+			var kind, assignee string
+			var reminders int
+			var details []byte
+			err := tx.QueryRow(ctx, `UPDATE tasks SET overdue_notified_at = $2
+				WHERE id = $1 AND status IN ('open', 'in_progress') AND due_at <= $2
+				  AND (overdue_notified_at IS NULL OR overdue_notified_at < due_at)
+				RETURNING kind, assignee, reminders, details`, id, now).Scan(&kind, &assignee, &reminders, &details)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errNothingToDo // someone else got there first: roll the version bump back
+			}
+			if err != nil {
+				return err
+			}
+			if app == nil {
+				ev.AggregateType, ev.AggregateID = "task", id
+				if ev.AggregateVersion, err = nextVersion(ctx, tx, "task", id); err != nil {
+					return err
+				}
+			}
+			ev.Data = map[string]any{"task_id": id, "kind": kind, "assignee": assignee, "reminders": reminders,
+				"reminders_left": max(limit-reminders, 0), "details": jsonMap(details)}
+			n++
+			return appendEvent(ctx, tx, ev)
+		})
+		if err != nil && !errors.Is(err, errNothingToDo) {
+			return n, err
 		}
 	}
-	return len(list), nil
+	return n, nil
 }
+
+func (g *Gateway) abandonedRuns(ctx context.Context, tenant string) (int, error) {
+	now := g.Now().UTC()
+	ids, err := g.candidates(ctx, tenant, `SELECT id::text FROM agent_runs WHERE status = 'running' AND started_at < $1`,
+		now.Add(-staleRunAfter))
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, id := range ids {
+		err := withTenantTx(ctx, g.DB, tenant, func(tx pgx.Tx) error {
+			var agent string
+			var app *string
+			err := tx.QueryRow(ctx, `UPDATE agent_runs SET status = 'failed', finished_at = $2,
+				summary = 'abandoned: not finished within `+staleRunAfter.String()+`'
+				WHERE id = $1 AND status = 'running' AND started_at < $3 RETURNING agent, application_id::text`,
+				id, now, now.Add(-staleRunAfter)).Scan(&agent, &app)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			n++
+			data := map[string]any{"run_id": id, "agent": agent, "status": "failed", "summary": "abandoned"}
+			if app != nil {
+				data["application_id"] = *app
+			}
+			return appendEvent(ctx, tx, Event{TenantID: tenant, AggregateType: "agent_run", AggregateID: id, AggregateVersion: 2,
+				Type: "AgentRunFinished", Actor: SchedulerActor, OccurredAt: now, Data: data})
+		})
+		if err != nil {
+			return n, err
+		}
+	}
+	return n, nil
+}
+
+var errNothingToDo = errors.New("nothing to do")
 
 // task.remind nudges the assignee of an open task and moves its due date on.
 func (g *Gateway) taskRemind(ctx context.Context, tx pgx.Tx, c *call) (any, error) {
 	id := str(c.input, "task_id")
-	var assignee, status, title string
+	var assignee, status, title, kind string
 	var reminders int
-	err := tx.QueryRow(ctx, `SELECT assignee, status::text, title, reminders FROM tasks WHERE id = $1 FOR UPDATE`, id).
-		Scan(&assignee, &status, &title, &reminders)
+	var due *time.Time
+	err := tx.QueryRow(ctx, `SELECT assignee, status::text, title, kind, reminders, due_at FROM tasks WHERE id = $1 FOR UPDATE`, id).
+		Scan(&assignee, &status, &title, &kind, &reminders, &due)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, newErr(ErrNotFound, "task %s not found", id)
 	}
@@ -169,6 +242,10 @@ func (g *Gateway) taskRemind(ctx context.Context, tx pgx.Tx, c *call) (any, erro
 	}
 	if status != "open" && status != "in_progress" {
 		return nil, &ToolError{Code: ErrStateConflict, Message: "task is already " + status, Details: map[string]any{"status": status}}
+	}
+	// Reminders are for things asked of the borrower; staff tasks are not nudged this way.
+	if kind != "document_request" {
+		return nil, &ToolError{Code: ErrPrecondition, Message: "only document requests take reminders", Details: map[string]any{"kind": kind}}
 	}
 	limit := g.Pack.Intake.ReminderLimit()
 	if reminders >= limit {
@@ -182,11 +259,18 @@ func (g *Gateway) taskRemind(ctx context.Context, tx pgx.Tx, c *call) (any, erro
 			via = "portal"
 		}
 	}
-	due := g.Now().UTC().Add(g.Pack.Intake.ReminderInterval())
+	// The due date moves on from now or from the current due date, whichever is later,
+	// so an early reminder never shortens the borrower's time.
+	from := g.Now().UTC()
+	if due != nil && due.After(from) {
+		from = due.UTC()
+	}
+	newDue := from.Add(g.Pack.Intake.ReminderInterval())
 	if _, err := tx.Exec(ctx, `UPDATE tasks SET reminders = reminders + 1, last_reminded_at = $2, due_at = $3 WHERE id = $1`,
-		id, g.Now().UTC(), due); err != nil {
+		id, g.Now().UTC(), newDue); err != nil {
 		return nil, err
 	}
+	due = &newDue
 	reminders++
 	if err := g.taskEvent(ctx, tx, c, "TaskReminded", id, map[string]any{"task_id": id, "reminders": reminders,
 		"due_at": due.Format(time.RFC3339), "notified_via": via}); err != nil {

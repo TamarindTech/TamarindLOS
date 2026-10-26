@@ -1,224 +1,99 @@
-# Tamarind Core Service
+# Tamarind LOS
 
-The core service is the **Tool Gateway** described in the [reference architecture](../../docs/architecture/02-reference-architecture.md). Every call, whether from a person, a partner system or an AI agent, goes through one pipeline:
+**An open-source, lightweight, agent-native Loan Origination System.**
 
+Tamarind helps lenders take a loan application from intake to an approved, signed offer, with AI agents doing the routine work and people staying in control of credit decisions.
+
+> **Status: Phase 0 (foundations).** One SME loan runs from intake to booking. The borrower uploads documents and gives consent in the portal; then built-in agents take over: an intake agent asks for whatever is missing, a document agent classifies and reads the uploads and checks them against the application, a verification agent runs the checks through mock connectors, and an underwriting agent evaluates the CEL policy rules and the pack's risk scorecard (which sets the price) and proposes a decision. Each agent action is a recorded run, call by call, and anything an agent cannot settle becomes a task in a shared queue. People approve decisions within their limits, the borrower accepts the offer, and the loan is handed to (mock) core banking. Everything goes through one tool gateway over REST and MCP, with Cedar authorization, agent autonomy levels and a hash-chained audit log on PostgreSQL. It is not ready for real data. See the [roadmap](#roadmap) and [open decisions](docs/adr/README.md).
+
+---
+
+## Why Tamarind?
+
+Most loan origination software is built for people clicking through screens. AI gets bolted on afterwards, as a chat window that can't act safely or explain what it did.
+
+Tamarind is **agent-native**: AI agents and people use the **same set of governed actions**, under explicit identity, policy and audit. Agents handle document chasing, data extraction and verification. People supervise, approve and handle exceptions.
+
+Read the full rationale in [Concept Paper 01: Agent-Native Systems](docs/concept/01-agent-native-concept-paper.md).
+
+## Key ideas
+
+- **One action surface.** The officer console, partner APIs and AI agents all call the same typed tools through one gateway. No side doors.
+- **Open protocols.** Tools are exposed over the Model Context Protocol (MCP) for agents and OpenAPI for systems.
+- **Humans decide credit.** Rules and scoring models decide, AI writes the analysis, and a person approves, unless a lender explicitly configures otherwise for a narrow, low-risk segment.
+- **Explainable by default.** Every recommendation and decision produces a structured decision record. Every action records who did it, on whose behalf, and why.
+- **Tiered autonomy.** Lenders set, per action, how much agents may do on their own (L0 manual to L4 autonomous within policy).
+- **Model-agnostic.** Bring any model provider, including self-hosted models.
+- **Lightweight.** Designed to run on a single server with PostgreSQL and object storage, and to scale out without a redesign.
+
+## Architecture at a glance
+
+```mermaid
+flowchart LR
+    H[People<br/>officer console, borrower portal] --> GW
+    S[Partner systems<br/>REST / webhooks] --> GW
+    A[AI agents<br/>MCP] --> GW
+    GW[Tool Gateway<br/>identity, policy, approval gates, audit] --> C[Domain Core<br/>applications, documents, decisions, offers]
+    C --> I[Connectors<br/>KYC, bureaus, bank data, e-sign]
+    C --> K[(Core banking hand-off<br/>e.g. Apache Fineract)]
 ```
-authenticate → validate input (JSON Schema) → idempotency → authorize (Cedar, actor and represented user)
-→ state and CEL preconditions → consent → agent autonomy (execute / ask a human / deny)
-→ execute in one transaction → hash-chained events + outbox → audit record
-```
 
-It is written in Go ([ADR-0001](../../docs/adr/0001-core-language.md)) and loads the [tool catalogue](../../tools) and [policy pack](../../policy-packs/baseline/sme-working-capital) at start-up.
+Details: [Technical Paper 02: Reference Architecture](docs/architecture/02-reference-architecture.md).
 
-> **Phase 0 status.** This is a working foundation, not a product. Authentication uses static development tokens, and only the tools below are implemented. Do not use it with real data.
+## Technology
 
-## Run it
+| Layer | Choice | Decision |
+|---|---|---|
+| Core and Tool Gateway | Go | [ADR-0001](docs/adr/0001-core-language.md) |
+| Agent runtime | Python | [ADR-0001](docs/adr/0001-core-language.md) |
+| Officer console and borrower portal | TypeScript (React) | [ADR-0001](docs/adr/0001-core-language.md) |
+| Policy | Cedar (authorization) and CEL (business rules) | [ADR-0004](docs/adr/0004-policy-engine.md) |
+| Data | PostgreSQL and S3-compatible object storage | [Reference Architecture](docs/architecture/02-reference-architecture.md) |
+| First reference product | SME working-capital loan | [ADR-0002](docs/adr/0002-first-reference-product-and-market.md) |
 
-### With Docker Compose
+## Quick start
 
 ```bash
 cd deploy/compose
 docker compose up --build
+curl -s localhost:8080/healthz
 ```
 
-This starts PostgreSQL 16, runs migrations and seeds two demo tenants, then serves on `http://localhost:8080`.
+Compose starts PostgreSQL, the core service and the agent runtime. On Windows, `deploy/compose/demo.ps1` runs the whole story and checks each step. Otherwise follow the walkthroughs in [services/core/README.md](services/core/README.md) and [services/agents/README.md](services/agents/README.md).
 
-### Without Docker
+## Scope
 
-You need Go 1.24+ and PostgreSQL 16.
-
-```bash
-cd services/core
-export TAMARIND_TOOLS_DIR=../../tools
-export TAMARIND_POLICY_PACK=../../policy-packs/baseline/sme-working-capital
-export TAMARIND_PRINCIPALS=../../deploy/compose/principals.yaml
-
-TAMARIND_APP_DB_PASSWORD=app-pw go run ./cmd/tamarind migrate --seed \
-  --database-url 'postgres://postgres:postgres@localhost:5432/tamarind?sslmode=disable'
-
-go run ./cmd/tamarind serve \
-  --database-url 'postgres://tamarind_app:app-pw@localhost:5432/tamarind?sslmode=disable'
-```
-
-## Commands
-
-| Command | Purpose |
+| In scope | Out of scope (integrate instead) |
 |---|---|
-| `tamarind validate` | Load the catalogue and policy pack, cross-check them, run the rule test cases. Used in CI. |
-| `tamarind migrate [--seed]` | Apply migrations as an administrator; set the `tamarind_app` password from `TAMARIND_APP_DB_PASSWORD`; optionally seed tenants and products. |
-| `tamarind serve` | Run the REST and MCP gateway. Connects as `tamarind_app`, so row-level security always applies. |
-| `tamarind verify-audit --tenant demo` | Recompute the tenant's event hash chain and report whether it is intact. |
+| Application intake, document collection and extraction, KYC/KYB orchestration, eligibility and policy checks, decision recommendation, approval workflow, offers, audit trail, hand-off | Loan servicing, repayments, collections, general ledger: handed off to systems such as Apache Fineract / Mifos X |
 
-## Interfaces
+## Documentation
 
-| Endpoint | Description |
+| Document | Description |
 |---|---|
-| `GET /healthz` | Liveness and database check |
-| `GET /v1/tools` | Catalogue, with which tools are implemented and which the caller has scopes for |
-| `POST /v1/tools/{name}` | Invoke a tool. Body: `{"input": {...}, "idempotency_key": "...", "reason": "...", "on_behalf_of": "...", "dry_run": false, "expected_state_version": 3, "run_id": "..."}` |
-| `POST /mcp` | MCP (Streamable HTTP, JSON responses): `initialize`, `ping`, `tools/list`, `tools/call` |
-| `PUT /v1/uploads/{token}` | Upload a file to a link from `document.upload_url`. The link is the credential (single use, 15 minutes); the file is hashed, its type checked against the declared MIME type and scanned for malware |
-| `GET /v1/events?after=0&types=…&wait=25` | The tenant's domain events in order (scope `events:read`). With `wait`, long-polls until an event commits. Used by the agent runtime ([ADR-0006](../../docs/adr/0006-agent-event-delivery.md)) |
+| [Concept Paper 01](docs/concept/01-agent-native-concept-paper.md) | What an agent-native system is, and why Tamarind is one |
+| [Technical Paper 02](docs/architecture/02-reference-architecture.md) | Reference architecture: components, contracts, data model, security |
+| [Architecture Decision Records](docs/adr/README.md) | Key technical decisions and their status |
+| [Specifications](docs/specs/README.md) | Tool catalogue, data model and the SME working-capital reference product |
 
-Responses always have the same shape: `status` (`ok`, `approval_required` or `error`), `result`, `approval_request_id`, `error {code, message, details}` and `invocation_id`. HTTP status codes follow the error code: 400 validation, 403 policy, 404 not found, 409 conflict, 422 precondition, 202 approval required.
+## Roadmap
 
-### Implemented tools (Phase 0)
-
-| Stage | Tools |
-|---|---|
-| Intake | `application.create`, `application.get`, `application.next_actions`, `application.submit`, `application.withdraw`, `party.add`, `consent.record` |
-| Documents | `document.upload_url`, `document.attach`, `document.classify`, `document.extract`, `evidence.verify`, `document.request` |
-| Verification | `kyc.run` (KYC for people, KYB for businesses), `sanctions.screen`, `credit.pull_report`, `bank.analyse_statements` |
-| Decision | `policy.evaluate`, `decision.recommend`, `decision.approve`, `decision.decline` |
-| Offer and booking | `offer.generate`, `offer.send`, `offer.accept`, `loan.handoff` |
-| Work | `task.list`, `task.create`, `task.complete`, `task.remind` (the shared work queue), `approval.list` (the approval queue, with the proposal and whether you may decide), `approval.respond` |
-| Agents | `agent.run_start`, `agent.run_finish`, `agent.run_list` (what each agent did, call by call) |
-| Integrations | `webhook.subscribe`, `webhook.list`, `webhook.remove` (operations only; agents never see them) |
-
-`application.update`, `party.update` and `decision.refer` return `NOT_IMPLEMENTED` for now.
-
-### Documents and evidence
-
-Required documents come from the policy pack (some only above an amount, via CEL `required_when`). A document counts towards completeness once it is classified as the required type for the right party. Extraction turns fields into evidence with a confidence score. Agents may mark evidence verified only at or above the pack's `min_confidence_auto_verify` (0.90) and cannot correct values; people can, and the original value is kept. Extracted values stay out of the event log. Upload links never reach the invocation log.
-
-Mock documents are small PDFs whose text names their type and fields:
-
-```
-%PDF-1.4
-% TAMARIND-DOC: business_registration
-registration_number: 0105561234567
-legal_name: Mekong Trading Co.
-```
-
-A value ending in `?` is read with low confidence. A file containing the EICAR test string is rejected as malware. Files are stored on disk (`TAMARIND_BLOB_DIR`) behind a blob-store port meant for S3-compatible storage.
-
-### Time-based events
-
-Agents are woken by events, so the gateway turns time into events too. A scheduler in `serve` (every `--timer-interval`, default 30s) emits each event in its own short transaction, claiming the row with a conditional update so several replicas never emit it twice, and taking locks in the same order as a tool call so a tick cannot deadlock with one. It emits:
-
-- `IntakeReviewDue` once the pack's grace period after submission is over (`intake.request_documents_after_minutes`, 10 minutes) and the application is still in intake. The intake agent asks for missing documents then, not the moment the borrower submits.
-- `TaskOverdue` when an open task passes its due date, once per due date. Document requests fall due after `intake.document_due_days` (7). `task.remind` (document requests only) notifies the borrower in the portal and moves the due date on by `intake.reminder_interval_days` (3) from the later of now and the current due date; after `intake.max_reminders` (2) it refuses, and the intake agent hands the request to the loan officers. When the document arrives, the request and any follow-up task the agent raised for it close together.
-- `AgentRunFinished` for a run left open for more than 10 minutes (the agent died before closing it), closed as failed.
-
-For tests and demos, `--intake-grace 2s` (or `TAMARIND_INTAKE_GRACE`) overrides the pack's grace period.
-
-### Outbound webhooks
-
-Every committed event lands in the outbox. A relay in `serve` (every `--outbox-interval`, default 5s) fans each outbox row out into one delivery per subscription whose `event_types` filter matches (empty means all), and a sender posts deliveries with backoff (1 min, 5 min, 30 min, 2 h, 6 h, then failed). A delivery is a `POST` with the event as JSON (`event_id`, `seq`, `type`, `actor`, aggregate, `occurred_at`, `data`) and headers `X-Tamarind-Event`, `X-Tamarind-Delivery`, `X-Tamarind-Timestamp` and `X-Tamarind-Signature: sha256=<HMAC-SHA256 of "<timestamp>.<body>">` with the subscription's secret, which `webhook.subscribe` returns once (it is redacted from the invocation log). Receivers verify the signature, reject stale timestamps and deduplicate on the delivery id, since a delivery can arrive more than once. Any 2xx counts as delivered.
-
-Destinations must be `https` on a public host without credentials; `--allow-insecure-webhooks` (or `TAMARIND_ALLOW_INSECURE_WEBHOOKS=true`) permits `http` and local addresses for development. Several replicas can relay and send at once: rows are claimed with `SKIP LOCKED` and a delivery in flight is not picked up again until its timeout has passed.
-
-### Risk grading and pricing
-
-Rules decide whether to lend; the pack's scorecard decides the price. `risk_grading` in `pack.yaml` lists CEL factors with points (debt service coverage, years trading, loan size against revenue, overdrafts, bureau score, bank history) and grade bands (A from 70 points, B from 40, C below). A factor whose data is missing scores nothing, so gaps never improve a grade. The grade maps to an APR through `product.pricing.apr_bps_by_grade`.
-
-`policy.evaluate` and `application.get` return the grade with each factor (provisional until every mandatory check has a result; borrowers do not see it). `decision.recommend` prices approving terms at the grade's APR when no rate is given. A person may set another rate with `pricing_override_reason`, never below the cheapest grade; agents always price at the grade, and an agent proposal with another rate is refused at once, before it could reach the approval queue. The decision record keeps the grade, its factors, the price and any override (who, why, by how much), and lists the scorecard among the models used. Pack tests can assert a grade (`expect.grade` in `tests.yaml`).
-
-### Tasks and agent runs
-
-People and agents share one work queue. A task is assigned to a principal or a role (`role:loan_officer`); `task.list` shows by default the open tasks assigned to you or to one of your roles, and only the assignee or the creator may complete one. Agents escalate by creating a task. `document.request` creates a task for the borrower (or the loan officers when there is no borrower login), keeps one open request per document and party, and the request closes itself when a document of that type is classified.
-
-Every time an agent acts it opens a run (`agent.run_start`) and passes the run id in the envelope of each call (`run_id`), so `agent.run_list` with a `run_id` returns the run's tool calls in order, each with its reason, autonomy and outcome. The run records what woke the agent, how it ended (`succeeded`, `escalated`, `failed`, `cancelled`), its step count, token usage and cost when reported, and the task it handed to a person. Only the agent that opened a run can use or close it, an agent has at most one open run per application, and a run left open for more than 10 minutes (the agent crashed) is closed as failed by the scheduler or when the next one starts. Run events are recorded on the run, so they do not change the application's `state_version`.
-
-### The journey
-
-```
-draft --submit--> submitted --> intake --(parties + consents + classified documents)--> verification
-verification --(all mandatory checks clear)--> underwriting --approve--> decisioned
-decisioned --offer.send--> offered --offer.accept--> accepted --loan.handoff--> handed_off
-verification --(a check needs review)--> referred      any review state --decline--> closed
-```
-
-Arrows without a tool name are automatic: after every change the gateway recomputes the snapshot (completeness, check summary, cash-flow metrics) and follows the pack's system transitions.
-
-Who does what in the demo tenant:
-
-| Principal | Token | Role in the journey |
+| Phase | Outcome | Status |
 |---|---|---|
-| `user:officer.ana`, `user:officer.chai` | `dev-officer-ana`, `dev-officer-chai` | Create applications, review agent proposals, generate and send offers |
-| `borrower:mekong` | `dev-borrower-mekong` | Sees only applications linked to it; records consent, accepts offers |
-| `agent:intake` | `dev-agent-intake` | Creates applications and adds parties; asks for missing documents (L3) |
-| `agent:documents` | `dev-agent-documents` | Classifies and extracts uploads; verifies confident evidence that matches the application (L3) |
-| `agent:verification` | `dev-agent-verification` | Runs checks (L3) |
-| `agent:underwriting` | `dev-agent-underwriting` | Evaluates policy; proposes recommendations (L2: a person must approve) |
-| `user:approver.ben` | `dev-approver-ben` | Approves up to 25,000; declines |
-| `user:approver.sara` | `dev-approver-sara` | Senior approver, up to 100,000 |
-| `user:ops.dana` | `dev-ops-dana` | Hands accepted loans to core banking |
+| **Design** | Concept, reference architecture, core decisions, specifications | Done |
+| **0 — Foundations** | Tool gateway, domain core, state machine, audit ledger, REST + MCP adapters, mock connectors | In progress: gateway, REST + MCP, audit ledger, CI, mock connectors, the full intake-to-booking journey, event feed, the Python agent runtime, the document pipeline (upload, scan, classify, extract, verify), the shared task queue, recorded agent runs with escalation, risk grading with grade-based pricing, time-based events (intake grace period, overdue reminders) and signed outbound webhooks done; an officer console next |
+| **1 — Assisted origination** | Officer console, document pipeline, intake and document agents, decision records | Planned |
+| **2 — Supervised automation** | Verification agent, policy packs, approval gates, evaluation harness, Fineract hand-off | Planned |
+| **3 — Ecosystem** | Borrower portal, external agent access, more connectors and jurisdiction packs | Planned |
 
-In Compose, the intake, document, verification and underwriting agents run on their own in the `agents` service ([services/agents](../agents/README.md)).
+## Contributing
 
-### Mock connectors
+Tamarind is at the stage where design feedback is the most valuable contribution. Read [CONTRIBUTING.md](CONTRIBUTING.md), then open an issue or comment on a proposed ADR. All participants are expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-KYC/KYB, sanctions, credit bureau, bank data, core banking and notifications are ports (`internal/connectors`) with deterministic mock adapters, so the system runs without external accounts. Results are healthy by default. Put a marker in a party's legal name to exercise other paths: `SANCTION` (confirmed sanctions match), `FAILKYC` (identity fails), `DEFAULT` (serious bureau default), `THIN` (weak cash flow), `STARTUP` (7 months trading).
+## License
 
-## Try it
+Licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) and [ADR-0003](docs/adr/0003-licence.md).
 
-Development tokens are in [deploy/compose/principals.yaml](../../deploy/compose/principals.yaml).
+## Disclaimer
 
-```bash
-API=http://localhost:8080/v1/tools
-AGENT='Authorization: Bearer dev-agent-intake'
-
-# The intake agent creates an application (agents must give a reason).
-curl -s $API/application.create -H "$AGENT" -d '{
-  "input": {"product_code": "SME-WC", "requested_amount_minor": 3000000, "currency": "USD", "requested_term_months": 12},
-  "idempotency_key": "demo-1", "reason": "new enquiry from web chat"}'
-
-# Ask what it may do next.
-curl -s $API/application.next_actions -H "$AGENT" -d '{
-  "input": {"application_id": "<id>"}, "reason": "planning next step"}'
-
-# Withdrawing is autonomy L2 for agents: it becomes an approval request (HTTP 202).
-curl -s $API/application.withdraw -H "$AGENT" -d '{
-  "input": {"application_id": "<id>", "reason": "customer cancelled"},
-  "idempotency_key": "demo-2", "reason": "customer asked to cancel", "on_behalf_of": "user:officer.ana"}'
-
-# Ana cannot approve a request made on her behalf (maker-checker). Chai can.
-curl -s $API/approval.respond -H 'Authorization: Bearer dev-officer-chai' -d '{
-  "input": {"approval_request_id": "<approval id>", "decision": "approve"}, "idempotency_key": "demo-3"}'
-```
-
-### Connect an MCP client
-
-Point any MCP client that supports Streamable HTTP at `http://localhost:8080/mcp` with an `Authorization: Bearer <token>` header. Tool names use underscores (`application_create`) because several clients reject dots. Call metadata goes in an `_envelope` argument:
-
-```json
-{"product_code": "SME-WC", "requested_amount_minor": 3000000, "currency": "USD", "requested_term_months": 12,
- "_envelope": {"reason": "new enquiry", "idempotency_key": "mcp-1"}}
-```
-
-## Tests
-
-```bash
-go test ./...                                            # unit tests (catalogue, policy, Cedar, autonomy)
-TAMARIND_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable' \
-  go test ./...                                          # plus end-to-end tests over REST and MCP
-```
-
-The end-to-end tests create a throwaway database and check, among other things: schema validation, CEL preconditions, the pack's party rules, optimistic concurrency, idempotent replay, agent autonomy and approval requests, maker-checker, re-authorization of approved calls, tenant isolation, MCP `tools/list` filtering, audit-chain verification, tamper detection and that the application role cannot edit events.
-
-`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event. `TestLoanJourney` also checks the risk grade (A at 14%), that the borrower cannot see it, that an agent cannot price off-grade, and a recorded pricing override. `TestWebhooks` subscribes two receivers, checks who may subscribe and which destinations are allowed, verifies every delivery's signature, filters, retries with backoff and that removal stops deliveries. `TestTimers` moves the gateway's clock to check the grace period, overdue reporting, reminders and the reminder limit. `TestTasksAndAgentRuns` covers runs (one open per agent and application, calls linked to the run, no borrowing another agent's run, closed runs refuse changes, stale runs), escalation tasks, who may list and complete tasks, and document requests that close when the document is classified.
-
-## Layout
-
-```
-cmd/tamarind/         CLI: validate, migrate, serve, verify-audit
-internal/catalogue/   tool definitions and input validation
-internal/policy/      policy pack: CEL rules and guards, Cedar authorization, autonomy
-internal/gateway/     the invocation pipeline, application snapshot, handlers, events and audit chain
-internal/connectors/  ports to external services, with mock adapters
-internal/api/         REST and MCP
-internal/auth/        development principals (to be replaced by OIDC / OAuth 2.1)
-internal/seed/        demo tenants and products
-migrations/           SQL migrations (embedded in the binary)
-```
-
-## Known gaps
-
-- Static tokens instead of OIDC / OAuth 2.1.
-- Minimal in-house MCP server ([ADR-0005](../../docs/adr/0005-mcp-server-phase-0.md)).
-- Classification and extraction are mocks; bank-statement months and financial-statement years are not yet checked against the pack minimums.
-- Connectors are mocks. Real adapters plug into the same ports.
-- The risk scorecard is an illustrative baseline; it is not calibrated on loss data.
-- Webhook secrets are stored in the clear (the sender needs them); encrypt them at rest before real use. The destination check looks at the host name only, so a public name that resolves to a private address is not caught.
-- Only document requests are chased automatically; other overdue tasks raise `TaskOverdue` but no agent acts on them yet.
+Tamarind is software, not legal or compliance advice. Lenders that deploy it remain responsible for meeting the lending, data-protection and consumer-protection requirements of their jurisdictions.

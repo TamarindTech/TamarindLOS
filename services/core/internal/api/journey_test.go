@@ -232,13 +232,16 @@ func TestLoanJourney(t *testing.T) {
 	if _, ok := e.state(borrower, appID)["risk_grade"]; ok {
 		t.Error("the borrower should not see the risk grade")
 	}
-	// Agents price at the grade: a different rate is refused even as a proposal.
+	// Agents price at the grade: a different rate is refused at once, before the
+	// proposal could reach the approval queue. So is an amount above the request.
 	r = e.call(uwAgent, "decision.recommend", map[string]any{"application_id": appID, "outcome": "approve",
 		"terms":        map[string]any{"amount_minor": 5000000, "term_months": 12, "rate_apr_bps": 1900},
 		"reason_codes": []string{"STRONG_CASH_FLOW"}, "narrative": "x"}, uw)
-	expect(t, r, "approval_required", "") // gated first; refused when a person approves it
-	expect(t, e.call(officer2, "approval.respond", map[string]any{"approval_request_id": r.ApprovalRequestID,
-		"decision": "approve"}, nil), "error", "POLICY_DENIED")
+	expect(t, r, "error", "POLICY_DENIED")
+	r = e.call(uwAgent, "decision.recommend", map[string]any{"application_id": appID, "outcome": "approve",
+		"terms":        map[string]any{"amount_minor": 9000000, "term_months": 12},
+		"reason_codes": []string{"STRONG_CASH_FLOW"}, "narrative": "x"}, uw)
+	expect(t, r, "error", "VALIDATION_FAILED")
 
 	r = e.call(uwAgent, "decision.recommend", map[string]any{"application_id": appID, "outcome": "approve",
 		"terms":        map[string]any{"amount_minor": 5000000, "term_months": 12},
@@ -252,14 +255,6 @@ func TestLoanJourney(t *testing.T) {
 	r = e.call(officer2, "approval.list", map[string]any{"application_id": appID}, nil)
 	expect(t, r, "ok", "")
 	queue := r.Result["approval_requests"].([]any)
-	if len(queue) == 2 { // the refused proposal is still pending; reject it
-		for _, q := range queue {
-			if id := q.(map[string]any)["approval_request_id"]; id != proposalID {
-				expect(t, e.call(officer2, "approval.respond", map[string]any{"approval_request_id": id, "decision": "reject"}, nil), "ok", "")
-			}
-		}
-		queue = e.call(officer2, "approval.list", map[string]any{"application_id": appID}, nil).Result["approval_requests"].([]any)
-	}
 	if len(queue) != 1 || queue[0].(map[string]any)["approval_request_id"] != proposalID ||
 		queue[0].(map[string]any)["you_can_decide"] != true || queue[0].(map[string]any)["tool"] != "decision.recommend" {
 		t.Fatalf("approval queue: %+v", queue)

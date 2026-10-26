@@ -197,6 +197,8 @@ func cmdServe(ctx context.Context, args []string, log *slog.Logger) error {
 	dsn := fs.String("database-url", env("TAMARIND_DATABASE_URL", ""), "application connection string (tamarind_app role)")
 	blobDir := fs.String("blob-dir", env("TAMARIND_BLOB_DIR", ".tamarind-blobs"), "directory for uploaded documents")
 	timerEvery := fs.Duration("timer-interval", envDuration("TAMARIND_TIMER_INTERVAL", 30*time.Second), "how often time-based events (intake review, overdue tasks) are checked")
+	outboxEvery := fs.Duration("outbox-interval", envDuration("TAMARIND_OUTBOX_INTERVAL", 5*time.Second), "how often outbox events are relayed to webhooks")
+	insecureHooks := fs.Bool("allow-insecure-webhooks", os.Getenv("TAMARIND_ALLOW_INSECURE_WEBHOOKS") == "true", "allow http:// and local webhook destinations (development only)")
 	intakeGrace := fs.String("intake-grace", env("TAMARIND_INTAKE_GRACE", ""), "override the pack's wait before the intake agent asks for documents (e.g. 2s for tests)")
 	_ = fs.Parse(args)
 	if *dsn == "" {
@@ -232,6 +234,8 @@ func cmdServe(ctx context.Context, args []string, log *slog.Logger) error {
 	defer stop()
 	go g.Listen(ctx)                 // wakes event-feed subscribers
 	go g.RunTimers(ctx, *timerEvery) // intake review and overdue tasks
+	g.Webhooks.AllowInsecure = *insecureHooks
+	go g.RunOutbox(ctx, *outboxEvery) // deliver events to webhook subscriptions
 	srv := &http.Server{Addr: *addr, Handler: (&api.Server{G: g, Log: log}).Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()

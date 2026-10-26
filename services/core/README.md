@@ -73,6 +73,7 @@ Responses always have the same shape: `status` (`ok`, `approval_required` or `er
 | Offer and booking | `offer.generate`, `offer.send`, `offer.accept`, `loan.handoff` |
 | Work | `task.list`, `task.create`, `task.complete`, `task.remind` (the shared work queue), `approval.list` (the approval queue, with the proposal and whether you may decide), `approval.respond` |
 | Agents | `agent.run_start`, `agent.run_finish`, `agent.run_list` (what each agent did, call by call) |
+| Integrations | `webhook.subscribe`, `webhook.list`, `webhook.remove` (operations only; agents never see them) |
 
 `application.update`, `party.update` and `decision.refer` return `NOT_IMPLEMENTED` for now.
 
@@ -93,24 +94,31 @@ A value ending in `?` is read with low confidence. A file containing the EICAR t
 
 ### Time-based events
 
-Agents are woken by events, so the gateway turns time into events too. A scheduler in `serve` (every `--timer-interval`, default 30s; one replica at a time via an advisory lock) emits:
+Agents are woken by events, so the gateway turns time into events too. A scheduler in `serve` (every `--timer-interval`, default 30s) emits each event in its own short transaction, claiming the row with a conditional update so several replicas never emit it twice, and taking locks in the same order as a tool call so a tick cannot deadlock with one. It emits:
 
 - `IntakeReviewDue` once the pack's grace period after submission is over (`intake.request_documents_after_minutes`, 10 minutes) and the application is still in intake. The intake agent asks for missing documents then, not the moment the borrower submits.
-- `TaskOverdue` when an open task passes its due date, once per due date. Document requests fall due after `intake.document_due_days` (7). `task.remind` notifies the assignee (the borrower in the portal) and moves the due date on by `intake.reminder_interval_days` (3); after `intake.max_reminders` (2) it refuses, and the intake agent hands the request to the loan officers.
+- `TaskOverdue` when an open task passes its due date, once per due date. Document requests fall due after `intake.document_due_days` (7). `task.remind` (document requests only) notifies the borrower in the portal and moves the due date on by `intake.reminder_interval_days` (3) from the later of now and the current due date; after `intake.max_reminders` (2) it refuses, and the intake agent hands the request to the loan officers. When the document arrives, the request and any follow-up task the agent raised for it close together.
+- `AgentRunFinished` for a run left open for more than 10 minutes (the agent died before closing it), closed as failed.
 
 For tests and demos, `--intake-grace 2s` (or `TAMARIND_INTAKE_GRACE`) overrides the pack's grace period.
+
+### Outbound webhooks
+
+Every committed event lands in the outbox. A relay in `serve` (every `--outbox-interval`, default 5s) fans each outbox row out into one delivery per subscription whose `event_types` filter matches (empty means all), and a sender posts deliveries with backoff (1 min, 5 min, 30 min, 2 h, 6 h, then failed). A delivery is a `POST` with the event as JSON (`event_id`, `seq`, `type`, `actor`, aggregate, `occurred_at`, `data`) and headers `X-Tamarind-Event`, `X-Tamarind-Delivery`, `X-Tamarind-Timestamp` and `X-Tamarind-Signature: sha256=<HMAC-SHA256 of "<timestamp>.<body>">` with the subscription's secret, which `webhook.subscribe` returns once (it is redacted from the invocation log). Receivers verify the signature, reject stale timestamps and deduplicate on the delivery id, since a delivery can arrive more than once. Any 2xx counts as delivered.
+
+Destinations must be `https` on a public host without credentials; `--allow-insecure-webhooks` (or `TAMARIND_ALLOW_INSECURE_WEBHOOKS=true`) permits `http` and local addresses for development. Several replicas can relay and send at once: rows are claimed with `SKIP LOCKED` and a delivery in flight is not picked up again until its timeout has passed.
 
 ### Risk grading and pricing
 
 Rules decide whether to lend; the pack's scorecard decides the price. `risk_grading` in `pack.yaml` lists CEL factors with points (debt service coverage, years trading, loan size against revenue, overdrafts, bureau score, bank history) and grade bands (A from 70 points, B from 40, C below). A factor whose data is missing scores nothing, so gaps never improve a grade. The grade maps to an APR through `product.pricing.apr_bps_by_grade`.
 
-`policy.evaluate` and `application.get` return the grade with each factor (provisional until every mandatory check has a result; borrowers do not see it). `decision.recommend` prices approving terms at the grade's APR when no rate is given. A person may set another rate with `pricing_override_reason`, never below the cheapest grade; agents always price at the grade, and an agent proposal with another rate is refused when a person approves it. The decision record keeps the grade, its factors, the price and any override (who, why, by how much), and lists the scorecard among the models used. Pack tests can assert a grade (`expect.grade` in `tests.yaml`).
+`policy.evaluate` and `application.get` return the grade with each factor (provisional until every mandatory check has a result; borrowers do not see it). `decision.recommend` prices approving terms at the grade's APR when no rate is given. A person may set another rate with `pricing_override_reason`, never below the cheapest grade; agents always price at the grade, and an agent proposal with another rate is refused at once, before it could reach the approval queue. The decision record keeps the grade, its factors, the price and any override (who, why, by how much), and lists the scorecard among the models used. Pack tests can assert a grade (`expect.grade` in `tests.yaml`).
 
 ### Tasks and agent runs
 
 People and agents share one work queue. A task is assigned to a principal or a role (`role:loan_officer`); `task.list` shows by default the open tasks assigned to you or to one of your roles, and only the assignee or the creator may complete one. Agents escalate by creating a task. `document.request` creates a task for the borrower (or the loan officers when there is no borrower login), keeps one open request per document and party, and the request closes itself when a document of that type is classified.
 
-Every time an agent acts it opens a run (`agent.run_start`) and passes the run id in the envelope of each call (`run_id`), so `agent.run_list` with a `run_id` returns the run's tool calls in order, each with its reason, autonomy and outcome. The run records what woke the agent, how it ended (`succeeded`, `escalated`, `failed`, `cancelled`), its step count, token usage and cost when reported, and the task it handed to a person. Only the agent that opened a run can use or close it, an agent has at most one open run per application, and a run left open for more than 10 minutes (the agent crashed) is closed as failed when the next one starts. Run events are recorded on the run, so they do not change the application's `state_version`.
+Every time an agent acts it opens a run (`agent.run_start`) and passes the run id in the envelope of each call (`run_id`), so `agent.run_list` with a `run_id` returns the run's tool calls in order, each with its reason, autonomy and outcome. The run records what woke the agent, how it ended (`succeeded`, `escalated`, `failed`, `cancelled`), its step count, token usage and cost when reported, and the task it handed to a person. Only the agent that opened a run can use or close it, an agent has at most one open run per application, and a run left open for more than 10 minutes (the agent crashed) is closed as failed by the scheduler or when the next one starts. Run events are recorded on the run, so they do not change the application's `state_version`.
 
 ### The journey
 
@@ -189,7 +197,7 @@ TAMARIND_TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres
 
 The end-to-end tests create a throwaway database and check, among other things: schema validation, CEL preconditions, the pack's party rules, optimistic concurrency, idempotent replay, agent autonomy and approval requests, maker-checker, re-authorization of approved calls, tenant isolation, MCP `tools/list` filtering, audit-chain verification, tamper detection and that the application role cannot edit events.
 
-`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event. `TestLoanJourney` also checks the risk grade (A at 14%), that the borrower cannot see it, that an agent cannot price off-grade, and a recorded pricing override. `TestTimers` moves the gateway's clock to check the grace period, overdue reporting, reminders and the reminder limit. `TestTasksAndAgentRuns` covers runs (one open per agent and application, calls linked to the run, no borrowing another agent's run, closed runs refuse changes, stale runs), escalation tasks, who may list and complete tasks, and document requests that close when the document is classified.
+`TestDocumentPipeline` covers upload links (unknown, reused, oversized), file-type and malware rejection, classification, extraction, the agent confidence guardrail, human correction, document requests and that upload links are not logged. `TestEventFeed` checks ordering, type filters, scopes and that a long-polling reader wakes on commit. `TestLoanJourney` takes one loan from intake to booking (consent gates, six checks, policy, an agent proposal approved by a person, approval limits, offer, borrower acceptance, hand-off). `TestDeclinePath` follows a sanctions match to a referred case and a decline with an adverse-action event. `TestLoanJourney` also checks the risk grade (A at 14%), that the borrower cannot see it, that an agent cannot price off-grade, and a recorded pricing override. `TestWebhooks` subscribes two receivers, checks who may subscribe and which destinations are allowed, verifies every delivery's signature, filters, retries with backoff and that removal stops deliveries. `TestTimers` moves the gateway's clock to check the grace period, overdue reporting, reminders and the reminder limit. `TestTasksAndAgentRuns` covers runs (one open per agent and application, calls linked to the run, no borrowing another agent's run, closed runs refuse changes, stale runs), escalation tasks, who may list and complete tasks, and document requests that close when the document is classified.
 
 ## Layout
 
@@ -212,5 +220,5 @@ migrations/           SQL migrations (embedded in the binary)
 - Classification and extraction are mocks; bank-statement months and financial-statement years are not yet checked against the pack minimums.
 - Connectors are mocks. Real adapters plug into the same ports.
 - The risk scorecard is an illustrative baseline; it is not calibrated on loss data.
-- No outbox relay yet: agents read events from the feed, but there are no outbound webhooks.
+- Webhook secrets are stored in the clear (the sender needs them); encrypt them at rest before real use. The destination check looks at the host name only, so a public name that resolves to a private address is not caught.
 - Only document requests are chased automatically; other overdue tasks raise `TaskOverdue` but no agent acts on them yet.

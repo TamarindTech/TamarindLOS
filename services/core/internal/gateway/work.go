@@ -25,6 +25,7 @@ const staleRunAfter = 10 * time.Minute
 var noSnapshot = map[string]bool{
 	"approval.respond": true, "task.create": true, "task.complete": true, "task.remind": true,
 	"agent.run_start": true, "agent.run_finish": true,
+	"webhook.subscribe": true, "webhook.remove": true,
 }
 
 // checkRun verifies that the envelope's run_id is an open run of the calling agent.
@@ -176,35 +177,58 @@ func (g *Gateway) taskComplete(ctx context.Context, tx pgx.Tx, c *call) (any, er
 	return map[string]any{"task_id": id, "status": to}, nil
 }
 
-// completeDocumentRequests closes open requests for a document type once a document
-// of that type has been classified for the party (or for the applicant when the
-// document names no party).
+// completeDocumentRequests closes the open request for a document type once a document
+// of that type has been classified for the party (a document that names no party counts
+// for the applicant, as it does for completeness). A collect_document task the intake
+// agent raised for that request closes with it.
 func (g *Gateway) completeDocumentRequests(ctx context.Context, tx pgx.Tx, c *call, documentID, partyID, docType string) error {
-	rows, err := tx.Query(ctx, `UPDATE tasks SET status = 'done', completed_by = $1, completed_at = now(),
+	if partyID == "" {
+		for _, p := range c.app.Parties {
+			if p.Role == "applicant" {
+				partyID = p.PartyID
+			}
+		}
+	}
+	ids, err := collectIDs(tx.Query(ctx, `UPDATE tasks SET status = 'done', completed_by = $1, completed_at = now(),
 		outcome = jsonb_build_object('document_id', $2::text)
 		WHERE application_id = $3 AND kind = 'document_request' AND status IN ('open', 'in_progress')
-		  AND details->>'document_type' = $4 AND (NULLIF($5, '') IS NULL OR details->>'party_id' = $5)
-		RETURNING id::text`, c.p.ID, documentID, c.app.ID, docType, partyID)
+		  AND details->>'document_type' = $4 AND details->>'party_id' = $5
+		RETURNING id::text`, c.p.ID, documentID, c.app.ID, docType, partyID))
 	if err != nil {
 		return err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+	if len(ids) > 0 {
+		followUps, err := collectIDs(tx.Query(ctx, `UPDATE tasks SET status = 'done', completed_by = $1, completed_at = now(),
+			outcome = jsonb_build_object('document_id', $2::text)
+			WHERE application_id = $3 AND kind = 'collect_document' AND status IN ('open', 'in_progress')
+			  AND details->>'document_request_task_id' = ANY($4)
+			RETURNING id::text`, c.p.ID, documentID, c.app.ID, ids))
+		if err != nil {
 			return err
 		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
+		ids = append(ids, followUps...)
 	}
 	for _, id := range ids {
 		c.addEvent("TaskCompleted", map[string]any{"task_id": id, "status": "done", "document_id": documentID})
 	}
 	return nil
+}
+
+// collectIDs reads a single text column from a query's rows.
+func collectIDs(rows pgx.Rows, err error) ([]string, error) {
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (g *Gateway) taskList(ctx context.Context, tx pgx.Tx, c *call) (any, error) {
@@ -300,9 +324,9 @@ func (g *Gateway) agentRunStart(ctx context.Context, tx pgx.Tx, c *call) (any, e
 	}
 	var existing string
 	var stale bool
-	err := tx.QueryRow(ctx, `SELECT id::text, started_at < now() - make_interval(secs => $3) FROM agent_runs
+	err := tx.QueryRow(ctx, `SELECT id::text, started_at < $3 FROM agent_runs
 		WHERE agent = $1 AND application_id IS NOT DISTINCT FROM $2 AND status = 'running' FOR UPDATE`,
-		c.p.ID, appID, staleRunAfter.Seconds()).Scan(&existing, &stale)
+		c.p.ID, appID, g.Now().UTC().Add(-staleRunAfter)).Scan(&existing, &stale)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:
@@ -323,9 +347,9 @@ func (g *Gateway) agentRunStart(ctx context.Context, tx pgx.Tx, c *call) (any, e
 		trigger = &s
 	}
 	id := newUUID()
-	if _, err := tx.Exec(ctx, `INSERT INTO agent_runs (id, tenant_id, agent, agent_version, application_id, trigger_event_id, trigger_event_type)
-		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''))`, id, c.tenantID, c.p.ID, str(c.input, "agent_version"), appID, trigger,
-		str(c.input, "trigger_event_type")); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_runs (id, tenant_id, agent, agent_version, application_id, trigger_event_id, trigger_event_type, started_at)
+		VALUES ($1,$2,$3,$4,$5,$6,NULLIF($7,''),$8)`, id, c.tenantID, c.p.ID, str(c.input, "agent_version"), appID, trigger,
+		str(c.input, "trigger_event_type"), g.Now().UTC()); err != nil {
 		return nil, err
 	}
 	data := map[string]any{"run_id": id, "agent": c.p.ID, "trigger_event_type": str(c.input, "trigger_event_type")}

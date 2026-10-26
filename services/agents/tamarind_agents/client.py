@@ -29,6 +29,7 @@ class ToolResult:
     approval_request_id: str = ""
     error_code: str = ""
     error_message: str = ""
+    error_details: Any = None
     replayed: bool = False
 
     @property
@@ -44,6 +45,7 @@ class ToolResult:
             approval_request_id=data.get("approval_request_id", ""),
             error_code=err.get("code", ""),
             error_message=err.get("message", ""),
+            error_details=err.get("details"),
             replayed=bool(data.get("replayed")),
         )
 

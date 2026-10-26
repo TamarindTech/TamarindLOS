@@ -225,6 +225,19 @@ class IntakeTests(unittest.TestCase):
         self.assertIn("bank statements", args["message"])
         self.assertEqual(out.action, "acted")
 
+    def test_a_closed_request_is_not_chased(self):
+        c = FakeClient(application("intake"))
+        orig = c.call
+
+        def call(tool, args, **kw):
+            if tool == "task.remind":
+                return ToolResult("error", error_code="STATE_CONFLICT", error_message="task is already done",
+                                  error_details={"status": "done"})
+            return orig(tool, args, **kw)
+        c.call = call
+        out = IntakeAgent().handle(overdue(1), c)
+        self.assertEqual((out.action, out.task), ("skipped", None))
+
     def test_after_the_last_reminder_a_person_takes_over(self):
         c = FakeClient(application("intake"))
         out = IntakeAgent().handle(overdue(0, reminders=2), c)
@@ -349,6 +362,56 @@ class RuntimeTests(unittest.TestCase):
                     w.process(event("verification"))
             self.assertNotIn("agent.run_finish", [t for t, *_ in c.calls])
             self.assertIsNone(c.run_id)
+
+    def test_a_run_left_open_is_superseded(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = FakeClient(application("verification"))
+            orig, starts = c.call, []
+
+            def call(tool, args, **kw):
+                if tool == "agent.run_start":
+                    starts.append(1)
+                    if len(starts) == 1:
+                        return ToolResult("error", error_code="STATE_CONFLICT", error_message="open run",
+                                          error_details={"run_id": "run-old"})
+                return orig(tool, args, **kw)
+            c.call = call
+            Worker(VerificationAgent(), c, Path(d)).process(event("verification"))
+            finishes = [(a["run_id"], a["status"]) for t, a, *_ in c.calls if t == "agent.run_finish"]
+            self.assertEqual(finishes, [("run-old", "failed"), ("run-1", "succeeded")])
+            self.assertTrue(all(run == "run-1" for t, run in c.runs if t == "kyc.run"))
+
+    def test_a_reprocessed_event_does_not_reattach_the_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = FakeClient(application("verification"))
+            orig = c.call
+
+            def call(tool, args, **kw):
+                r = orig(tool, args, **kw)
+                if tool == "agent.run_start":
+                    r.replayed = True
+                return r
+            c.call = call
+            Worker(VerificationAgent(), c, Path(d)).process(event("verification"))
+            self.assertTrue(all(run is None for t, run in c.runs if t == "kyc.run"))
+            self.assertIn("agent.run_finish", [t for t, *_ in c.calls])
+
+    def test_closing_a_run_is_retried(self):
+        from tamarind_agents import runtime
+        from tamarind_agents.client import GatewayError
+        with tempfile.TemporaryDirectory() as d:
+            c = FakeClient(application("verification"))
+            orig, failures = c.call, []
+
+            def call(tool, args, **kw):
+                if tool == "agent.run_finish" and not failures:
+                    failures.append(1)
+                    raise GatewayError("connection reset")
+                return orig(tool, args, **kw)
+            c.call = call
+            with unittest.mock.patch.object(runtime.time, "sleep"):
+                Worker(VerificationAgent(), c, Path(d)).process(event("verification"))
+            self.assertEqual([a["status"] for t, a, *_ in c.calls if t == "agent.run_finish"], ["succeeded"])
 
     def test_skipped_event_closes_the_run_as_cancelled(self):
         with tempfile.TemporaryDirectory() as d:

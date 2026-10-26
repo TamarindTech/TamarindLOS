@@ -85,6 +85,17 @@ permit (
   resource
 );
 
+// Operations manage where the tenant's events are delivered. Agents never do.
+permit (
+  principal in Tamarind::Role::"operations",
+  action in [
+    Tamarind::Action::"webhook.subscribe",
+    Tamarind::Action::"webhook.list",
+    Tamarind::Action::"webhook.remove"
+  ],
+  resource
+);
+
 // Every member of staff works the shared task queue.
 permit (
   principal,

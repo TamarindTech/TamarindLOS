@@ -350,8 +350,12 @@ type IntakeSettings struct {
 	MaxReminders int `json:"max_reminders"`
 }
 
-// Grace is how long after submission the intake agent waits before asking.
+// Grace is how long after submission the intake agent waits before asking (10 minutes
+// when the pack does not say).
 func (s IntakeSettings) Grace() time.Duration {
+	if s.RequestDocumentsAfterMinutes <= 0 {
+		return 10 * time.Minute
+	}
 	return time.Duration(s.RequestDocumentsAfterMinutes) * time.Minute
 }
 

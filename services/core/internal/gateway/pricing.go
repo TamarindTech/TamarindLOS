@@ -1,7 +1,10 @@
 package gateway
 
 import (
+	"context"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/TamarindTech/TamarindLOS/services/core/internal/policy"
 )
@@ -56,6 +59,28 @@ func (g *Gateway) checkPricing(c *call, rg *policy.RiskGrade, t terms, proposer 
 	}
 	pricing["override"] = map[string]any{"by": c.p.ID, "reason": reason, "delta_bps": t.RateAPRBps - int64(rg.APRBps)}
 	return pricing, nil
+}
+
+// recommendPreflight checks approving terms and their price before decision.recommend
+// is executed or parked for approval, so an agent proposing an off-grade rate is refused
+// at once instead of when a person tries to approve it.
+func (g *Gateway) recommendPreflight(_ context.Context, _ pgx.Tx, c *call) *ToolError {
+	outcome := str(c.input, "outcome")
+	if outcome != "approve" && outcome != "approve_with_conditions" {
+		return nil
+	}
+	rg := g.riskGrade(c)
+	t := termsFrom(mapOf(c.input["terms"]), terms{AmountMinor: c.app.RequestedAmountMinor,
+		TermMonths: c.app.RequestedTermMonths, RateAPRBps: g.defaultRate(rg)})
+	if e := g.validTerms(c.app, t); e != nil {
+		return e
+	}
+	proposer := c.p.ID
+	if c.proposedBy != "" {
+		proposer = c.proposedBy
+	}
+	_, e := g.checkPricing(c, rg, t, proposer)
+	return e
 }
 
 // withScorecard adds the scorecard to the models a decision lists, once.

@@ -281,8 +281,9 @@ class IntakeAgent(Agent):
                     "reminders": r.result.get("reminders")}
             if r.ok:
                 return Outcome("acted", f"reminded about the {doc} ({r.result.get('reminders_left')} reminder(s) left)", [call])
-            if r.error_code == "STATE_CONFLICT" and "already" in r.error_message:
-                return Outcome("skipped", "the request is no longer open", [call])
+            details = r.error_details if isinstance(r.error_details, dict) else {}
+            if r.error_code == "STATE_CONFLICT" and "status" in details:
+                return Outcome("skipped", f"the request is already {details['status']}", [call])
             # Otherwise (reminder limit reached, or the reminder failed) a person takes over.
         reminders = data.get("reminders", 0)
         return Outcome("escalated", f"the {doc} is still missing after {reminders} reminder(s)",

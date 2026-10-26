@@ -219,6 +219,22 @@ func TestTimers(t *testing.T) {
 	if events(appID, "TaskOverdue") != 2 || events(appID, "TaskReminded") != 2 {
 		t.Errorf("events: overdue %d, reminded %d", events(appID, "TaskOverdue"), events(appID, "TaskReminded"))
 	}
-	// A borrower cannot send reminders.
+	// A borrower cannot send reminders, and staff tasks are not reminded this way.
 	expect(t, e.call(borrower, "task.remind", map[string]any{"task_id": taskID}, nil), "error", "POLICY_DENIED")
+	r = e.call(officer, "task.create", map[string]any{"application_id": appID, "kind": "review_evidence", "title": "Look",
+		"assignee": "role:loan_officer"}, nil)
+	expect(t, e.call(officer, "task.remind", map[string]any{"task_id": r.Result["task_id"]}, nil), "error", "PRECONDITION_FAILED")
+
+	// --- A run left open by a crashed agent is closed by the scheduler. ---
+	r = e.call(agent, "agent.run_start", map[string]any{"application_id": appID, "agent_version": "t"}, why)
+	expect(t, r, "ok", "")
+	stale := r.Result["run_id"].(string)
+	tick(0)
+	at(12*24*time.Hour + 11*time.Minute)
+	tick(1)
+	r = e.call(officer, "agent.run_list", map[string]any{"run_id": stale}, nil)
+	if got := r.Result["runs"].([]any)[0].(map[string]any); got["status"] != "failed" {
+		t.Errorf("abandoned run: %+v", got)
+	}
+	expect(t, e.call(agent, "agent.run_finish", map[string]any{"run_id": stale, "status": "succeeded"}, why), "error", "STATE_CONFLICT")
 }

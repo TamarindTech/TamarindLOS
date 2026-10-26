@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -38,13 +39,19 @@ type Gateway struct {
 	// them before serving to use real providers.
 	Connectors connectors.Set
 
+	// Webhooks says which destinations may be subscribed; WebhookClient sends deliveries
+	// (a default client with a timeout when nil).
+	Webhooks      WebhookPolicy
+	WebhookClient *http.Client
+
 	// IntakeGrace is how long after submission the scheduler waits before announcing
 	// IntakeReviewDue (the pack's intake.request_documents_after_minutes by default).
 	IntakeGrace time.Duration
 
-	tenantIDs map[string]string // slug -> uuid
-	feed      hub
-	handlers  map[string]handler
+	tenantIDs  map[string]string // slug -> uuid
+	feed       hub
+	handlers   map[string]handler
+	preflights map[string]preflight
 }
 
 // New builds a gateway and resolves tenant ids from the database.
@@ -52,6 +59,7 @@ func New(ctx context.Context, cat *catalogue.Catalogue, pack *policy.Pack, reg *
 	g := &Gateway{Catalogue: cat, Pack: pack, Registry: reg, DB: db, Log: log, Now: time.Now, tenantIDs: map[string]string{},
 		IntakeGrace: pack.Intake.Grace()}
 	g.handlers = g.registerHandlers()
+	g.preflights = g.registerPreflights()
 	g.Connectors = connectors.Mocks(func() time.Time { return g.Now() }, filepath.Join(os.TempDir(), "tamarind-blobs"))
 	for slug := range reg.Tenants {
 		var id string
@@ -251,7 +259,15 @@ func (g *Gateway) run(ctx context.Context, tx pgx.Tx, c *call, applyAutonomy boo
 		return nil, e
 	}
 
-	// 4. Autonomy: agents may act, propose for approval, or only assist.
+	// 4. Preflight: input rules that need the application, checked before a call can
+	// be parked for approval, so a proposal nobody could approve is refused at once.
+	if pre := g.preflights[c.tool.Name]; pre != nil {
+		if e := pre(ctx, tx, c); e != nil {
+			return nil, e
+		}
+	}
+
+	// 5. Autonomy: agents may act, propose for approval, or only assist.
 	if applyAutonomy && c.p.IsAgent() {
 		level := policy.EffectiveAutonomy(c.tool, g.Pack.Autonomy[c.tool.Name], "", c.p.TrustLevel)
 		switch policy.OutcomeFor(level) {
@@ -273,14 +289,14 @@ func (g *Gateway) run(ctx context.Context, tx pgx.Tx, c *call, applyAutonomy boo
 		return &runResult{Status: "ok", Result: map[string]any{"dry_run": true, "would": "execute"}}, nil
 	}
 
-	// 5. Execute.
+	// 6. Execute.
 	h := g.handlers[c.tool.Name]
 	result, err := h(ctx, tx, c)
 	if err != nil {
 		return nil, err
 	}
 
-	// 6. State: the tool's own transition, then a fresh snapshot (completeness, checks,
+	// 7. State: the tool's own transition, then a fresh snapshot (completeness, checks,
 	// metrics) and any automatic system transitions it unlocks.
 	if c.tool.Transition != nil {
 		if err := g.transition(ctx, tx, c, c.tool.Transition.To, "tool"); err != nil {
@@ -299,7 +315,7 @@ func (g *Gateway) run(ctx context.Context, tx pgx.Tx, c *call, applyAutonomy boo
 		}
 	}
 
-	// 7. Events.
+	// 8. Events.
 	if err := g.flushEvents(ctx, tx, c); err != nil {
 		return nil, err
 	}
@@ -611,7 +627,7 @@ func isUUID(s string) bool {
 
 // secretResultKeys are result fields that must not be kept in the invocation log
 // (they grant access on their own, like upload links).
-var secretResultKeys = map[string]bool{"upload_url": true, "upload_token": true}
+var secretResultKeys = map[string]bool{"upload_url": true, "upload_token": true, "secret": true}
 
 // redact returns the response with secret result fields replaced.
 func redact(resp *Response) *Response {

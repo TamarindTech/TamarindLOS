@@ -54,6 +54,18 @@ func (g *Gateway) registerHandlers() map[string]handler {
 		"agent.run_start":          g.agentRunStart,
 		"agent.run_finish":         g.agentRunFinish,
 		"agent.run_list":           g.agentRunList,
+		"webhook.subscribe":        g.webhookSubscribe,
+		"webhook.list":             g.webhookList,
+		"webhook.remove":           g.webhookRemove,
+	}
+}
+
+// preflight validates a call's input against the application before autonomy gating.
+type preflight func(ctx context.Context, tx pgx.Tx, c *call) *ToolError
+
+func (g *Gateway) registerPreflights() map[string]preflight {
+	return map[string]preflight{
+		"decision.recommend": g.recommendPreflight,
 	}
 }
 

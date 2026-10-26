@@ -28,8 +28,8 @@ func load(t *testing.T) (*catalogue.Catalogue, *policy.Pack) {
 
 func TestPackMatchesCatalogue(t *testing.T) {
 	cat, pack := load(t)
-	if n := len(cat.Names); n != 37 {
-		t.Errorf("expected 37 tools, got %d", n)
+	if n := len(cat.Names); n != 40 {
+		t.Errorf("expected 40 tools, got %d", n)
 	}
 	for _, p := range pack.Validate(cat) {
 		t.Error(p)

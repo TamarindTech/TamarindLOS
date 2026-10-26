@@ -51,6 +51,7 @@ var ungroupedActions = map[string]bool{
 	"decision.approve": true, "decision.decline": true, "offer.accept": true,
 	"loan.handoff": true, "approval.respond": true,
 	"agent.run_start": true, "agent.run_finish": true,
+	"webhook.subscribe": true, "webhook.list": true, "webhook.remove": true,
 }
 
 // roleParents lets a role inherit another role's permissions.
